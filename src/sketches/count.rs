@@ -132,6 +132,73 @@ impl Count {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sketches::utils::SketchInput;
+
+    #[test]
+    fn count_tracks_exact_frequency_for_single_key() {
+        // verify median-of-sign strategy returns the true count for repeated updates
+        let mut sketch = Count::init_count_with_rc(3, 64);
+        let key = SketchInput::Str("alpha");
+
+        for _ in 0..25 {
+            sketch.insert_count(&key);
+        }
+
+        assert_eq!(sketch.get_est(&key), 25.0);
+    }
+
+    #[test]
+    fn count_merge_accumulates_rows_elementwise() {
+        // ensure merging combines counters so estimates add up
+        let mut left = Count::init_count_with_rc(3, 32);
+        let mut right = Count::init_count_with_rc(3, 32);
+        let key = SketchInput::String("beta".to_string());
+
+        for _ in 0..10 {
+            left.insert_count(&key);
+        }
+        for _ in 0..7 {
+            right.insert_count(&key);
+        }
+
+        left.merge(&right);
+        assert_eq!(left.get_est(&key), 17.0);
+    }
+
+    #[test]
+    fn countuniv_estimates_and_l2_are_consistent() {
+        // confirm CountUniv updates produce expected estimate and l2 tracking
+        let mut sketch = CountUniv::init_countuniv_with_rc(3, 32);
+        let key = SketchInput::Str("gamma");
+
+        let est_after_first = sketch.update_and_est(&key, 5);
+        assert_eq!(est_after_first, 5.0);
+
+        let est_after_second = sketch.update_and_est(&key, -2);
+        assert_eq!(est_after_second, 3.0);
+
+        let l2 = sketch.get_l2();
+        assert!(l2 >= 3.0, "expected non-trivial l2, got {}", l2);
+    }
+
+    #[test]
+    fn countuniv_merge_combines_frequency_vectors() {
+        // validate merging two sketches keeps per-row counters additive
+        let mut left = CountUniv::init_countuniv_with_rc(3, 32);
+        let mut right = CountUniv::init_countuniv_with_rc(3, 32);
+        let key = SketchInput::U32(42);
+
+        left.insert_with_count(&key, 4);
+        right.insert_with_count(&key, 9);
+
+        left.merge(&right);
+        assert_eq!(left.get_est(&key), 13.0);
+    }
+}
+
 impl Default for CountUniv {
     fn default() -> Self {
         Self::init_count()

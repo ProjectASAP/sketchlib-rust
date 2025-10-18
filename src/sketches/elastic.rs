@@ -118,3 +118,67 @@ impl Elastic {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sketches::utils::{LASTSTATE, SketchInput};
+
+    fn bucket_for(id: &str, sketch: &Elastic) -> usize {
+        let hash = hash_it(LASTSTATE, &SketchInput::String(id.to_string()));
+        hash as usize % sketch.bktlen as usize
+    }
+
+    #[test]
+    fn heavy_bucket_tracks_repeated_flow_exactly() {
+        // repeated inserts of the same flow should accumulate in the heavy bucket
+        let mut sketch = Elastic::init_with_length(8);
+        let flow = "flow::primary".to_string();
+
+        for _ in 0..12 {
+            sketch.insert(flow.clone());
+        }
+
+        assert_eq!(sketch.query(flow.clone()), 12);
+        assert_eq!(sketch.query("other".to_string()), 0);
+    }
+
+    #[test]
+    fn light_sketch_counts_colliding_flows() {
+        // simulate two flows mapped to the same bucket so the light CountMin tracks the second one
+        let mut sketch = Elastic::init_with_length(8);
+        let primary = "flow::primary";
+        let primary_bucket = bucket_for(primary, &sketch);
+
+        let mut secondary = None;
+        for idx in 0..10_000 {
+            let candidate = format!("flow::secondary::{idx}");
+            if bucket_for(&candidate, &sketch) == primary_bucket && candidate != primary {
+                secondary = Some(candidate);
+                break;
+            }
+        }
+        let secondary = secondary.expect("unable to find colliding key for test");
+
+        for _ in 0..10 {
+            sketch.insert(primary.to_string());
+        }
+        for _ in 0..6 {
+            sketch.insert(secondary.clone());
+        }
+
+        let heavy_est = sketch.query(primary.to_string());
+        let light_est = sketch.query(secondary.clone());
+
+        assert!(
+            heavy_est >= 10,
+            "expected heavy bucket >= 10 after repeated inserts, got {}",
+            heavy_est
+        );
+        assert!(
+            light_est >= 6,
+            "colliding flow should accumulate in CountMin, expected >= 6, got {}",
+            light_est
+        );
+    }
+}

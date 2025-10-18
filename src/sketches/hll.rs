@@ -494,3 +494,82 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sketches::utils::SketchInput;
+
+    const TOLERANCE: f64 = 0.05;
+
+    #[test]
+    fn hll_df_modified_estimate_is_close_to_truth() {
+        // inserting many unique elements should yield an estimate within tolerance of the truth
+        let mut sketch = HllDfModified::new();
+        for value in 0..10_000u64 {
+            sketch.insert(&SketchInput::U64(value));
+        }
+        let estimate = sketch.get_est() as f64;
+        let truth = 10_000.0;
+        let error = (estimate - truth).abs() / truth;
+        assert!(
+            error < TOLERANCE,
+            "expected error < {TOLERANCE}, truth={truth}, estimate={estimate}, error={error}"
+        );
+    }
+
+    #[test]
+    fn hll_df_modified_merge_accumulates_cardinality() {
+        // merging two sketches should approximate the union of their inputs
+        let mut left = HllDfModified::new();
+        let mut right = HllDfModified::new();
+
+        for value in 0..5_000u64 {
+            left.insert(&SketchInput::U64(value));
+        }
+        for value in 5_000..10_000u64 {
+            right.insert(&SketchInput::U64(value));
+        }
+
+        left.merge(&right);
+        let estimate = left.get_est() as f64;
+        let truth = 10_000.0;
+        let error = (estimate - truth).abs() / truth;
+        assert!(
+            error < TOLERANCE,
+            "union error too high: truth={truth}, estimate={estimate}, error={error}"
+        );
+    }
+
+    #[test]
+    fn hll_datafusion_count_matches_truth() {
+        // the datafusion variant should count unique values accurately
+        let mut sketch = HLLDataFusion::<u64>::new();
+        for value in 0..5_000u64 {
+            sketch.add(&value);
+        }
+
+        let estimate = sketch.count() as f64;
+        let truth = 5_000.0;
+        let error = (estimate - truth).abs() / truth;
+        assert!(
+            error < TOLERANCE,
+            "datafusion HLL error too high: truth={truth}, estimate={estimate}, error={error}"
+        );
+    }
+
+    #[test]
+    fn hllhip_estimate_increases_with_new_items() {
+        // HIP estimator should grow as we observe more unique keys
+        let mut sketch = HLLHIP::<u64>::init_hll();
+
+        sketch.insert_hll(&0u64);
+        let est_after_one = sketch.calculate_est();
+        sketch.insert_hll(&1u64);
+        sketch.insert_hll(&2u64);
+        let est_after_three = sketch.calculate_est();
+
+        assert!(est_after_three >= est_after_one);
+        assert!(est_after_three > 0.0);
+    }
+}

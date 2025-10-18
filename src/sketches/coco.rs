@@ -24,6 +24,66 @@ impl<'long_enough_sketch> Default for Bucket<'long_enough_sketch> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_then_estimate_matches_full_value_for_partial_key() {
+        // cover end-to-end flow of inserting a key and querying with a substring
+        let mut coco = Coco::init_with_size(32, 4);
+        let key = SketchInput::String("user:1234".to_string());
+
+        coco.insert(&key, 3);
+        coco.insert(&key, 2);
+
+        let estimate = coco.estimate(SketchInput::Str("user"));
+        assert_eq!(estimate, 5);
+    }
+
+    #[test]
+    fn estimate_with_udf_allows_custom_partial_matching() {
+        // ensure custom UDF matching logic aggregates only intended buckets
+        let mut coco = Coco::init_with_size(32, 4);
+        coco.insert(&SketchInput::String("region=us|id=1".into()), 4);
+        coco.insert(&SketchInput::String("region=eu|id=2".into()), 6);
+
+        fn matcher(full: &SketchInput, partial: &SketchInput) -> bool {
+            match (full, partial) {
+                (SketchInput::String(f), SketchInput::Str(p)) => f.contains(p),
+                (SketchInput::Str(f), SketchInput::Str(p)) => f.contains(p),
+                (SketchInput::String(f), SketchInput::String(p)) => f.contains(p),
+                (SketchInput::Str(f), SketchInput::String(p)) => f.contains(p),
+                _ => false,
+            }
+        }
+
+        let total_us = coco.estimate_with_udf(SketchInput::Str("us"), matcher);
+        assert_eq!(total_us, 4);
+
+        let total_all = coco.estimate_with_udf(
+            SketchInput::Str("region"),
+            matcher,
+        );
+        assert_eq!(total_all, 10);
+    }
+
+    #[test]
+    fn merge_combines_tables_without_losing_counts() {
+        // verify merging replays entries so both sketches contribute to totals
+        let mut left = Coco::init_with_size(32, 4);
+        let mut right = Coco::init_with_size(32, 4);
+
+        left.insert(&SketchInput::String("alpha:key".into()), 7);
+        right.insert(&SketchInput::String("beta:key".into()), 11);
+
+        left.merge(&right);
+
+        assert_eq!(left.estimate(SketchInput::Str("alpha")), 7);
+        assert_eq!(left.estimate(SketchInput::Str("beta")), 11);
+    }
+}
+
 // I believe this means 'long_enough_sketch will outlive 'just_for_est
 impl<'long_enough_sketch, 'just_for_est> Bucket<'long_enough_sketch> {
     pub fn new() -> Self {

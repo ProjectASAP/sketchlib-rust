@@ -86,3 +86,33 @@ fn median(xs: &mut [f64]) -> f64 {
         0.5 * (xs[n / 2 - 1] + xs[n / 2])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locher_estimate_tracks_inserted_frequency() {
+        // inserting the same key multiple times should result in a strong estimate
+        let mut sketch = LocherSketch::new(3, 32, 5);
+        let key = "service::a".to_string();
+
+        for _ in 0..30 {
+            sketch.insert(&key, 1);
+        }
+
+        let estimate = sketch.estimate(&key);
+        assert!(estimate >= 15.0, "expected estimate to be close to 30, got {}", estimate);
+        assert_eq!(sketch.estimate("missing"), 0.0);
+    }
+
+    #[test]
+    fn median_handles_even_and_empty_inputs() {
+        // exercise the helper median function for the edge cases it supports
+        assert_eq!(median(&mut []), 0.0);
+        let mut even = [4.0, 1.0, 3.0, 2.0];
+        assert_eq!(median(&mut even), 2.5);
+        let mut odd = [9.0, 1.0, 5.0];
+        assert_eq!(median(&mut odd), 5.0);
+    }
+}

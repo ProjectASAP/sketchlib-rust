@@ -186,3 +186,46 @@ impl MicroScope {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_and_query_track_recent_volume() {
+        // sequential inserts must accumulate so querying at the same timestamp reflects volume
+        let mut scope = MicroScope::init_microscope(128, 8);
+        for _ in 0..20 {
+            scope.insert(0);
+        }
+
+        let estimate = scope.query(0);
+        assert!(
+            estimate >= 18.0,
+            "expected query to report close to 20, got {}",
+            estimate
+        );
+    }
+
+    #[test]
+    fn merge_combines_counters_for_matching_windows() {
+        // merging two scopes with identical configuration should add their histories
+        let mut base = MicroScope::init_microscope(128, 8);
+        let mut other = MicroScope::init_microscope(128, 8);
+
+        for t in 0..10 {
+            base.insert(t);
+        }
+        for t in 10..20 {
+            other.insert(t);
+        }
+
+        base.merge(&other, 20);
+        let estimate = base.query(20);
+        assert!(
+            estimate >= 15.0,
+            "after merge expected estimate to reflect combined inserts, got {}",
+            estimate
+        );
+    }
+}

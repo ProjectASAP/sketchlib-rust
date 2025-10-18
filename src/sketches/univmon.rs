@@ -324,3 +324,68 @@ impl UnivMon {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sketches::utils::{LASTSTATE, SketchInput, hash_it};
+
+    fn bottom_layer_for(um: &UnivMon, key: &str) -> usize {
+        let hash = hash_it(LASTSTATE, &SketchInput::Str(key));
+        um.find_bottom_layer_num(hash, um.layer)
+    }
+
+    #[test]
+    fn update_populates_bucket_size_and_heavy_hitters() {
+        // processing a single hot key should record its weight in the heavy hitter layers
+        let mut um = UnivMon::init_univmon(16, 3, 32, 4, 0);
+        let key = "alpha";
+        let bottom = bottom_layer_for(&um, key);
+
+        for _ in 0..40 {
+            um.univmon_processing(key, 1, bottom);
+        }
+
+        assert_eq!(um.bucket_size, 40);
+
+        let idx = um.hh_layers[0]
+            .find(key)
+            .expect("heavy hitter should track key");
+        assert!(
+            um.hh_layers[0].heap[idx].count >= 20,
+            "expected significant count for heavy hitter, got {}",
+            um.hh_layers[0].heap[idx].count
+        );
+        assert!(um.calc_l1() > 0.0);
+        assert!(um.calc_card() >= 1.0);
+    }
+
+    #[test]
+    fn merge_with_combines_heavy_hitters() {
+        // merging two sketches should keep contributions from both sides
+        let mut left = UnivMon::init_univmon(16, 3, 32, 4, 0);
+        let mut right = UnivMon::init_univmon(16, 3, 32, 4, 0);
+
+        let key_left = "left";
+        let key_right = "right";
+
+        let bottom_left = bottom_layer_for(&left, key_left);
+        let bottom_right = bottom_layer_for(&right, key_right);
+
+        for _ in 0..25 {
+            left.univmon_processing(key_left, 1, bottom_left);
+        }
+        for _ in 0..30 {
+            right.univmon_processing(key_right, 1, bottom_right);
+        }
+
+        left.merge_with(&right);
+
+        let idx_left = left.hh_layers[0].find(key_left).expect("left key present");
+        let idx_right = left.hh_layers[0]
+            .find(key_right)
+            .expect("right key present");
+        assert!(left.hh_layers[0].heap[idx_left].count > 0);
+        assert!(left.hh_layers[0].heap[idx_right].count > 0);
+    }
+}

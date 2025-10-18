@@ -186,3 +186,47 @@ impl Item {
         println!("key: {} with count: {}", self.key, self.count);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heap_retains_top_k_items_by_count() {
+        // confirm inserting beyond capacity keeps only the k largest counts
+        let mut heap = TopKHeap::init_heap(3);
+        for i in 1..=5 {
+            let key = format!("key-{i}");
+            heap.update(&key, i);
+        }
+
+        assert_eq!(heap.heap.len(), 3);
+        let mut counts: Vec<i64> = heap.heap.iter().map(|item| item.count).collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn update_count_increments_existing_entry() {
+        // ensure update_count bumps stored counter instead of replacing the entry
+        let mut heap = TopKHeap::init_heap(4);
+        heap.update_count("alpha", 1);
+        heap.update_count("alpha", 1);
+        heap.update_count("alpha", 1);
+
+        let idx = heap.find("alpha").expect("alpha present");
+        assert_eq!(heap.heap[idx].count, 3);
+    }
+
+    #[test]
+    fn clean_resets_heap_state() {
+        // cleaning should drop all entries and reclaim capacity
+        let mut heap = TopKHeap::init_heap(2);
+        heap.update("a", 5);
+        heap.update("b", 6);
+        assert_eq!(heap.heap.len(), 2);
+
+        heap.clean();
+        assert!(heap.heap.is_empty());
+    }
+}
