@@ -11,7 +11,7 @@ pub enum Chapter<'a> {
     COCO(Coco<'a>),
     CU(CountUniv),
     ELASTIC(Elastic),
-    HLL(HllDfModified),
+    HLL(HllDf),
     KLL(KLL),
     UNIFORM(UniformSampling),
     LOCHER(LocherSketch),

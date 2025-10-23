@@ -83,6 +83,31 @@ impl<T: Clone> Vector1D<T> {
     pub fn into_vec(self) -> Vec<T> {
         self.data
     }
+
+    /// Update value at ```pos``` if ```val``` is greater
+    pub fn update_if_greater(&mut self, pos: usize, val: T)
+    where
+        T: Copy + Ord,
+    {
+        self.data[pos] = self.data[pos].max(val);
+    }
+
+    /// Update value at ```pos``` if ```val``` is greater
+    pub fn update_if_smaller(&mut self, pos: usize, val: T)
+    where
+        T: Copy + Ord,
+    {
+        self.data[pos] = self.data[pos].min(val);
+    }
+
+    /// Applies an update to a single cell via the supplied operator.
+    pub fn update_one_counter<F>(&mut self, pos: usize, op: F, value: T)
+    where
+        F: Fn(T, T) -> T,
+        T: Clone,
+    {
+        self.data[pos] = op(self.data[pos].clone(), value);
+    }
 }
 
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.

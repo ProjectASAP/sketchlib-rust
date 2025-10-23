@@ -19,10 +19,13 @@ pub use heap::Item;
 pub use heap::TopKHeap;
 
 pub mod hll;
-pub use hll::HLL;
-pub use hll::HLLDataFusion;
-pub use hll::HLLHIP;
-pub use hll::HllDfModified;
+pub use hll::HllDf;
+pub use hll::HllDs;
+pub use hll::HyperLogLog;
+// pub use hll::HLL;
+// pub use hll::HLLDataFusion;
+// pub use hll::HLLHIP;
+// pub use hll::HllDfModified;
 
 pub mod kll;
 pub use kll::KLL;
