@@ -1,6 +1,5 @@
 use sketchlib_rust::{
-    SketchInput, SketchList, SketchMatrix,
-    sketches::{HyperLogLog, StructuredCountMin},
+    CountMin, SketchInput, SketchList, SketchMatrix, sketches::{Count, HyperLogLog, StructuredCountMin, VectorCountMin}
 };
 
 #[test]
@@ -57,6 +56,80 @@ fn structured_countmin_tracks_frequency_estimates() {
         "cold key should at least match inserted count, got {cold_est}"
     );
     assert!(heavy_est >= cold_est, "heavy key should dominate cold key");
+}
+
+#[test]
+fn vector_countmin_tracks_frequency_estimates() {
+    let mut sketch = VectorCountMin::with_dimensions(4, 64);
+    let heavy = SketchInput::String("vector-hot-key".into());
+    let cold = SketchInput::String("vector-cold-key".into());
+
+    for _ in 0..25 {
+        sketch.insert(&heavy);
+    }
+    for _ in 0..3 {
+        sketch.insert(&cold);
+    }
+
+    let heavy_est = sketch.estimate(&heavy);
+    let cold_est = sketch.estimate(&cold);
+
+    assert!(
+        heavy_est >= 25,
+        "heavy key should have estimate >= 25, got {heavy_est}"
+    );
+    assert!(
+        cold_est >= 3,
+        "cold key should at least match inserted count, got {cold_est}"
+    );
+    assert!(heavy_est >= cold_est, "heavy key should dominate cold key");
+}
+
+#[test]
+fn vector_countmin_matches_matrix_estimates_on_shared_stream() {
+    let mut matrix = StructuredCountMin::with_dimensions(3, 256);
+    let mut vector = VectorCountMin::with_dimensions(3, 256);
+    let mut classic = CountMin::init_cm_with_row_col(3, 256);
+
+    let updates: Vec<SketchInput<'static>> = (0..1_000)
+        .map(|i| SketchInput::U64((i % 97) as u64))
+        .collect();
+
+    for value in &updates {
+        matrix.insert(value);
+        vector.insert(value);
+        classic.insert_cm(value);
+    }
+
+    for query in [SketchInput::U64(1), SketchInput::U64(32), SketchInput::U64(96)] {
+        let matrix_est = matrix.estimate(&query);
+        let vector_est = vector.estimate(&query);
+        assert_eq!(
+            matrix_est, vector_est,
+            "expected vector-backed sketch to mirror matrix-backed results"
+        );
+
+        let target = match &query {
+            SketchInput::U64(v) => *v,
+            _ => unreachable!(),
+        };
+
+        let actual = updates
+            .iter()
+            .filter(|value| match value {
+                SketchInput::U64(v) => *v == target,
+                _ => false,
+            })
+            .count() as u64;
+
+        assert!(
+            vector_est >= actual,
+            "count-min estimate should not be below true count"
+        );
+
+        let classic_est = classic.get_est(&query);
+        assert!(classic_est>0, "classic sketch estimate should remain finite");
+    }
 }
 
 #[test]

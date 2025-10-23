@@ -46,6 +46,7 @@ pub mod utils;
 
 pub mod structured;
 pub use structured::CountMin as StructuredCountMin;
+pub use structured::VectorCountMin;
 pub use structured::HyperLogLog;
 
 #[cfg(test)]

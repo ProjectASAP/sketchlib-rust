@@ -1,5 +1,7 @@
+use std::arch::aarch64::vld1_dup_p16;
+
 use crate::{
-    common::{SketchInput, SketchMatrix, hash_it},
+    common::{SketchInput, SketchMatrix, Vector2D, hash_it},
     // input::hash_for_all_rows,
 };
 
@@ -127,6 +129,95 @@ impl CountMin {
 
     /// Exposes the backing matrix for inspection/testing.
     pub fn as_matrix(&self) -> &SketchMatrix<u64> {
+        &self.counts
+    }
+}
+
+/// Count-Min sketch backed by the `Vector2D` abstraction.
+#[derive(Clone, Debug)]
+pub struct VectorCountMin {
+    counts: Vector2D<u64>,
+    row: usize,
+    col: usize,
+}
+
+impl Default for VectorCountMin {
+    fn default() -> Self {
+        Self::with_dimensions(3, 4096)
+    }
+}
+
+impl VectorCountMin {
+    /// Creates a sketch with the requested number of rows and columns.
+    pub fn with_dimensions(rows: usize, cols: usize) -> Self {
+        let mut sk = VectorCountMin {
+            counts: Vector2D::init(rows, cols),
+            row: rows,
+            col: cols,
+        };
+        sk.counts.fill(0);
+        sk
+    }
+
+    // /// Number of rows in the sketch.
+    // pub fn rows(&self) -> usize {
+    //     self.counts.get_row()
+    // }
+
+    // /// Number of columns in the sketch.
+    // pub fn cols(&self) -> usize {
+    //     self.counts.get_col()
+    // }
+
+    /// Inserts an observation while using the standard Count-Min minimum row update rule.
+    pub fn insert(&mut self, value: &SketchInput) {
+
+        for r in 0..self.row {
+            let hashed = hash_it(r, value);
+            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
+            self.counts.update_one_counter(r, col, std::ops::Add::add, 1_u64);
+        }
+    }
+
+    /// Inserts an observation using the combined hash optimization.
+    pub fn fast_insert(&mut self, value: &SketchInput) {
+        self.counts.fast_insert(std::ops::Add::add, 1_u64, hash_it(0, value));
+    }
+
+    /// Returns the frequency estimate for the provided value.
+    pub fn estimate(&self, value: &SketchInput) -> u64 {
+        let mut min = u64::MAX;
+        for r in 0..self.row {
+            let hashed = hash_it(r, value);
+            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
+            // let idx = row * cols + col;
+            min = min.min(self.counts.query_one_counter(r, col));
+        }
+        min
+    }
+
+    /// Returns the frequency estimate for the provided value, with hash optimization.
+    pub fn fast_estimate(&self, value: &SketchInput) -> u64 {
+        self.counts.fast_query(hash_it(0, value))
+    }
+
+    /// Merges another sketch while asserting compatible dimensions.
+    pub fn merge(&mut self, other: &Self) {
+        assert_eq!(
+            (self.row, self.col),
+            (other.row, other.col),
+            "dimension mismatch while merging VectorCountMin sketches"
+        );
+
+        for i in 0..self.row {
+            for j in 0..self.col {
+                self.counts.update_one_counter(i, j, std::ops::Add::add, other.counts.query_one_counter(i, j));
+            }
+        }
+    }
+
+    /// Exposes the backing matrix for inspection/testing.
+    pub fn as_storage(&self) -> &Vector2D<u64> {
         &self.counts
     }
 }

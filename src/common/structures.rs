@@ -221,3 +221,108 @@ impl<T> IndexMut<usize> for SketchList<T> {
         &mut self.data[index]
     }
 }
+
+/// Shared thin wrapper over `Vec<T>` tailored for sketches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vector1D<T: Clone> {
+    data: Vec<T>,
+    length: usize,
+}
+
+/// Shared thin wrapper over `Vec<T>` tailored for sketches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vector2D<T> {
+    data: Vec<T>,
+    row: usize,
+    col: usize,
+}
+
+/// Shared thin wrapper over `Vec<T>` tailored for sketches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vector3D<T> {
+    data: Vec<T>,
+    layer: usize,
+    row: usize,
+    col: usize,
+}
+
+impl<T: Clone> Vector1D<T> {
+    pub fn init(l: usize) -> Self {
+        Vector1D {
+            data: Vec::with_capacity(l),
+            length: l,
+        }
+    }
+}
+
+impl<T: Clone> Vector2D<T> {
+    pub fn init(r: usize, c: usize) -> Self {
+        Vector2D {
+            data: Vec::with_capacity(r * c),
+            row: r,
+            col: c,
+        }
+    }
+
+    pub fn fill(&mut self, empty_value: T) -> () {
+        for _ in 0..self.row {
+            for _ in 0..self.col {
+                self.data.push(empty_value.clone());
+            }
+        }
+    }
+
+    pub fn update_one_counter<F>(&mut self, r: usize, c: usize, op: F, v: T) -> ()
+    where
+        F: Fn(T, T) -> T,
+    {
+        self.data[r * self.col + c] = op(self.data[r * self.col + c].clone(), v);
+    }
+
+    pub fn fast_insert<F>(&mut self, op: F, v: T, hashed_val: u64) -> ()
+    where
+        F: Fn(T, T) -> T,
+    {
+        for r in 0..self.row {
+            let hashed = (hashed_val >> 12 * r) & (0x1 << 13 - 1);
+            let c = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
+            self.data[r * self.col + c] = op(self.data[r * self.col + c].clone(), v.clone());
+        }
+    }
+
+    pub fn query_one_counter(&self, r: usize, c: usize) -> T {
+        self.data[r * self.col + c].clone()
+    }
+
+    pub fn fast_query(&self, hashed_val: u64) -> T
+    where
+        T: Clone + Ord + Copy,
+    {
+        let mut min = self.data[(hashed_val as usize & (1 << 13 - 1) as usize) % self.col];
+        for r in 1..self.row {
+            let hashed = (hashed_val >> 12 * r) & (0x1 << 13 - 1);
+            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
+            min = min.min(self.data[r * self.col + col]);
+        }
+        min
+    }
+
+    pub fn get_row(self) -> usize {
+        self.row
+    }
+
+    pub fn get_col(self) -> usize {
+        self.col
+    }
+}
+
+impl<T> Vector3D<T> {
+    pub fn init(l: usize, r: usize, c: usize) -> Self {
+        Vector3D {
+            data: Vec::with_capacity(l * r * c),
+            layer: l,
+            row: r,
+            col: c,
+        }
+    }
+}
