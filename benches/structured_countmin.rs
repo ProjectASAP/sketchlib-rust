@@ -1,6 +1,7 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use sketchlib_rust::{
-    CountMin, SketchInput, sketches::{StructuredCount, StructuredCountMin, VectorCountMin}
+    CountMin, SketchInput,
+    sketches::{StructuredCount, StructuredCountMin, VectorCountMin},
 };
 
 fn insert_benchmark(c: &mut Criterion) {

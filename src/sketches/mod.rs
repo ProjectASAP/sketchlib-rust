@@ -8,7 +8,7 @@ pub use count::CountUniv;
 
 pub mod countmin;
 pub use countmin::CountMin;
-pub use countmin::MicroScopeCM;
+// pub use countmin::MicroScopeCM;
 
 pub mod elastic;
 pub use elastic::Elastic;
@@ -45,11 +45,11 @@ pub mod utils;
 // pub use utils::{STATE1, STATE2, STATE3, STATE4, STATE5};
 
 pub mod structured;
-pub use structured::Count as StructuredCount;
-pub use structured::CountMin as StructuredCountMin;
-pub use structured::HyperLogLog;
-pub use structured::VectorCount;
-pub use structured::VectorCountMin;
+// pub use structured::Count as StructuredCount;
+// pub use structured::CountMin as StructuredCountMin;
+// pub use structured::HyperLogLog;
+// pub use structured::VectorCount;
+// pub use structured::VectorCountMin;
 
 #[cfg(test)]
 pub mod test_utils;

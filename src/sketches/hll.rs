@@ -1,9 +1,51 @@
-use crate::{LASTSTATE, SketchInput};
+use crate::{LASTSTATE, SketchInput, Vector1D};
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use std::marker::PhantomData;
 
 use crate::hash_it;
+
+/// The greater is P, the smaller the error.
+const HLL_P: usize = 14_usize;
+/// The number of bits of the hash value used determining the number of leading zeros
+const HLL_Q: usize = 64_usize - HLL_P;
+const NUM_REGISTERS: usize = 1_usize << HLL_P;
+/// Mask to obtain index into the registers
+const HLL_P_MASK: u64 = (NUM_REGISTERS as u64) - 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HyperLogLog {
+    registers: Vector1D<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HllDf {
+    registers: Vector1D<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HllDs {
+    registers: Vector1D<u8>,
+    kxq0: f64,
+    kxq1: f64,
+    est: f64,
+}
+
+impl Default for HllDf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HllDf {
+    pub fn new() -> Self {
+        HllDf {
+            registers: Vector1D::filled(NUM_REGISTERS, 0_u8),
+        }
+    }
+
+    pub fn insert(&mut self, obj: &SketchInput) {}
+}
 
 // use super::utils::SEED;
 
@@ -145,13 +187,6 @@ impl HllDfModified {
 
 // this is the HLL from DataFusion
 
-/// The greater is P, the smaller the error.
-const HLL_P: usize = 14_usize;
-/// The number of bits of the hash value used determining the number of leading zeros
-const HLL_Q: usize = 64_usize - HLL_P;
-const NUM_REGISTERS: usize = 1_usize << HLL_P;
-/// Mask to obtain index into the registers
-const HLL_P_MASK: u64 = (NUM_REGISTERS as u64) - 1;
 #[derive(Clone, Debug)]
 pub struct HLLDataFusion<T>
 where
