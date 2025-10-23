@@ -409,10 +409,16 @@ impl<T> Vector2D<T> {
         T: Clone,
     {
         let mask = (1u64 << 13) - 1;
+        let cols = self.cols;
+        let pow2 = cols.is_power_of_two();
         for row in 0..self.rows {
             let hashed = (hashed_val >> (12 * row)) & mask;
-            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.cols;
-            let idx = row * self.cols + col;
+            let col = if pow2 {
+                (hashed as usize) & (cols - 1)
+            } else {
+                (hashed as usize) % cols
+            };
+            let idx = row * cols + col;
             self.data[idx] = op(self.data[idx].clone(), value.clone());
         }
     }
@@ -426,45 +432,34 @@ impl<T> Vector2D<T> {
     }
 
     /// Queries all rows using precomputed hashed values to find the minimum.
+    #[inline(always)]
     pub fn fast_query(&self, hashed_val: u64) -> T
     where
         T: Clone + Ord,
     {
-        // let mask = (1u64 << 13) - 1;
-        // let mut min: Option<T> = None;
-        // for row in 0..self.rows {
-        //     let hashed = (hashed_val >> (12 * row)) & mask;
-        //     let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.cols;
-        //     let value = self.data[row * self.cols + col].clone();
-        //     if let Some(current) = &mut min {
-        //         if value < *current {
-        //             *current = value;
-        //         }
-        //     } else {
-        //         min = Some(value);
-        //     }
-        // }
-        // min.expect("fast_query called on empty matrix")
         let mask = (1u64 << 13) - 1;
-        let mut min = self.data[(hashed_val as usize & ((1usize << 13) - 1)) % self.cols].clone();
+        let cols = self.cols;
+        let pow2 = cols.is_power_of_two();
+
+        // Row 0
+        let h0 = (hashed_val & mask) as usize;
+        let c0 = if pow2 { h0 & (cols - 1) } else { h0 % cols };
+        let mut min = self.data[c0].clone();
+
+        // Remaining rows
         for row in 1..self.rows {
             let hashed = (hashed_val >> (12 * row)) & mask;
-            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.cols;
-            if min >  self.data[row * self.cols + col] {
-                min = self.data[row*self.cols+col].clone();
+            let col = if pow2 {
+                (hashed as usize) & (cols - 1)
+            } else {
+                (hashed as usize) % cols
+            };
+            let candidate = self.data[row * cols + col].clone();
+            if candidate < min {
+                min = candidate;
             }
         }
         min
-        //     let value = self.data[row * self.cols + col].clone();
-        //     if let Some(current) = &mut min {
-        //         if value < *current {
-        //             *current = value;
-        //         }
-        //     } else {
-        //         min = Some(value);
-        //     }
-        // }
-        // min.expect("fast_query called on empty matrix")
     }
 
     /// Returns an immutable slice corresponding to a full row.

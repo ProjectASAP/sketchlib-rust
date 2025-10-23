@@ -1,7 +1,6 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use sketchlib_rust::{
-    SketchInput,
-    sketches::{StructuredCount, StructuredCountMin, VectorCountMin},
+    CountMin, SketchInput, sketches::{StructuredCount, StructuredCountMin, VectorCountMin}
 };
 
 fn insert_benchmark(c: &mut Criterion) {
@@ -63,18 +62,18 @@ fn insert_benchmark(c: &mut Criterion) {
         );
     });
 
-    // group.bench_function("classic_insert", |b| {
-    //     b.iter_batched(
-    //         || StructuredCount::default(),
-    //         |mut sketch| {
-    //             for value in &updates {
-    //                 sketch.insert_with_count(value);
-    //             }
-    //             black_box(sketch);
-    //         },
-    //         BatchSize::SmallInput,
-    //     );
-    // });
+    group.bench_function("classic_insert", |b| {
+        b.iter_batched(
+            || CountMin::default(),
+            |mut sketch| {
+                for value in &updates {
+                    sketch.insert_cm(value);
+                }
+                black_box(sketch);
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.finish();
 }
@@ -161,23 +160,23 @@ fn estimate_benchmark(c: &mut Criterion) {
         );
     });
 
-    // group.bench_function("classic_estimate", |b| {
-    //     b.iter_batched(
-    //         || {
-    //             let mut sketch = Count::init_count_with_rc(3, 4_096);
-    //             for value in &updates {
-    //                 sketch.insert_count(value);
-    //             }
-    //             sketch
-    //         },
-    //         |sketch| {
-    //             for query in &queries {
-    //                 black_box(sketch.get_est(query));
-    //             }
-    //         },
-    //         BatchSize::SmallInput,
-    //     );
-    // });
+    group.bench_function("classic_estimate", |b| {
+        b.iter_batched(
+            || {
+                let mut sketch = CountMin::init_cm_with_row_col(3, 4_096);
+                for value in &updates {
+                    sketch.insert_cm(value);
+                }
+                sketch
+            },
+            |sketch| {
+                for query in &queries {
+                    black_box(sketch.get_est(query));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.finish();
 }
