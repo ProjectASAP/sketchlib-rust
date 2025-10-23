@@ -231,12 +231,260 @@ pub struct Vector1D<T: Clone> {
     length: usize,
 }
 
+impl<T: Clone> Vector1D<T> {
+    /// Creates an empty vector with reserved capacity.
+    pub fn init(len: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(len),
+            length: len,
+        }
+    }
+
+    /// Creates a vector by cloning `value` `len` times.
+    pub fn filled(len: usize, value: T) -> Self {
+        Self {
+            data: vec![value; len],
+            length: len,
+        }
+    }
+
+    /// Replaces the contents with `len` clones of `value`.
+    pub fn fill(&mut self, value: T) {
+        self.data.clear();
+        self.data.resize(self.length, value);
+        self.length = self.data.len();
+    }
+
+    /// Builds a vector from supplied storage.
+    pub fn from_vec(vec: Vec<T>) -> Self {
+        let length = vec.len();
+        Self { data: vec, length }
+    }
+
+    /// Returns the number of stored elements.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Indicates whether the vector is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Provides immutable access to the underlying slice.
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+
+    /// Provides mutable access to the underlying slice.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Returns a reference by index when it exists.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.data.get(index)
+    }
+
+    /// Returns a mutable reference by index when it exists.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.data.get_mut(index)
+    }
+
+    /// Returns an iterator over immutable references.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.data.iter()
+    }
+
+    /// Returns an iterator over mutable references.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.data.iter_mut()
+    }
+
+    /// Consumes the wrapper and returns the underlying vector.
+    pub fn into_vec(self) -> Vec<T> {
+        self.data
+    }
+}
+
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vector2D<T> {
     data: Vec<T>,
-    row: usize,
-    col: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl<T> Vector2D<T> {
+    /// Creates an empty matrix with reserved capacity.
+    pub fn init(rows: usize, cols: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(rows * cols),
+            rows,
+            cols,
+        }
+    }
+
+    /// Builds a matrix using a generator that receives `(row, col)`.
+    pub fn from_fn<F>(rows: usize, cols: usize, mut f: F) -> Self
+    where
+        F: FnMut(usize, usize) -> T,
+    {
+        let mut data = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                data.push(f(r, c));
+            }
+        }
+        Self { data, rows, cols }
+    }
+
+    /// Replaces the contents with clones of `value`.
+    pub fn fill(&mut self, value: T)
+    where
+        T: Clone,
+    {
+        self.data.clear();
+        self.data.resize(self.rows * self.cols, value);
+    }
+
+    /// Returns the number of rows.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Returns the number of columns.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// Returns the total number of elements.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Provides immutable access to the flattened storage.
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+
+    /// Provides mutable access to the flattened storage.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Returns a reference to a cell when it exists.
+    pub fn get(&self, row: usize, col: usize) -> Option<&T> {
+        if row < self.rows && col < self.cols {
+            Some(&self.data[row * self.cols + col])
+        } else {
+            None
+        }
+    }
+
+    /// Returns a mutable reference to a cell when it exists.
+    pub fn get_mut(&mut self, row: usize, col: usize) -> Option<&mut T> {
+        if row < self.rows && col < self.cols {
+            Some(&mut self.data[row * self.cols + col])
+        } else {
+            None
+        }
+    }
+
+    /// Applies an update to a single cell via the supplied operator.
+    pub fn update_one_counter<F>(&mut self, row: usize, col: usize, op: F, value: T)
+    where
+        F: Fn(T, T) -> T,
+        T: Clone,
+    {
+        let idx = row * self.cols + col;
+        self.data[idx] = op(self.data[idx].clone(), value);
+    }
+
+    /// Inserts a value along every row using a hashed column selection.
+    pub fn fast_insert<F>(&mut self, op: F, value: T, hashed_val: u64)
+    where
+        F: Fn(T, T) -> T,
+        T: Clone,
+    {
+        let mask = (1u64 << 13) - 1;
+        for row in 0..self.rows {
+            let hashed = (hashed_val >> (12 * row)) & mask;
+            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.cols;
+            let idx = row * self.cols + col;
+            self.data[idx] = op(self.data[idx].clone(), value.clone());
+        }
+    }
+
+    /// Reads a single counter by `(row, col)`.
+    pub fn query_one_counter(&self, row: usize, col: usize) -> T
+    where
+        T: Clone,
+    {
+        self.data[row * self.cols + col].clone()
+    }
+
+    /// Queries all rows using precomputed hashed values to find the minimum.
+    pub fn fast_query(&self, hashed_val: u64) -> T
+    where
+        T: Clone + Ord,
+    {
+        let mask = (1u64 << 13) - 1;
+        let mut min: Option<T> = None;
+        for row in 0..self.rows {
+            let hashed = (hashed_val >> (12 * row)) & mask;
+            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.cols;
+            let value = self.data[row * self.cols + col].clone();
+            if let Some(current) = &mut min {
+                if value < *current {
+                    *current = value;
+                }
+            } else {
+                min = Some(value);
+            }
+        }
+        min.expect("fast_query called on empty matrix")
+    }
+
+    /// Returns an immutable slice corresponding to a full row.
+    pub fn row_slice(&self, row: usize) -> &[T] {
+        debug_assert!(row < self.rows, "row index out of bounds");
+        let start = row * self.cols;
+        let end = start + self.cols;
+        &self.data[start..end]
+    }
+
+    /// Returns a mutable slice corresponding to a full row.
+    pub fn row_slice_mut(&mut self, row: usize) -> &mut [T] {
+        debug_assert!(row < self.rows, "row index out of bounds");
+        let start = row * self.cols;
+        let end = start + self.cols;
+        &mut self.data[start..end]
+    }
+
+    /// Returns the number of rows (legacy helper).
+    pub fn get_row(&self) -> usize {
+        self.rows
+    }
+
+    /// Returns the number of columns (legacy helper).
+    pub fn get_col(&self) -> usize {
+        self.cols
+    }
+}
+
+impl<T> Index<usize> for Vector2D<T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.row_slice(index)
+    }
+}
+
+impl<T> IndexMut<usize> for Vector2D<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.row_slice_mut(index)
+    }
 }
 
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.
@@ -248,83 +496,13 @@ pub struct Vector3D<T> {
     col: usize,
 }
 
-impl<T: Clone> Vector1D<T> {
-    pub fn init(l: usize) -> Self {
-        Vector1D {
-            data: Vec::with_capacity(l),
-            length: l,
-        }
-    }
-}
-
-impl<T: Clone> Vector2D<T> {
-    pub fn init(r: usize, c: usize) -> Self {
-        Vector2D {
-            data: Vec::with_capacity(r * c),
-            row: r,
-            col: c,
-        }
-    }
-
-    pub fn fill(&mut self, empty_value: T) -> () {
-        for _ in 0..self.row {
-            for _ in 0..self.col {
-                self.data.push(empty_value.clone());
-            }
-        }
-    }
-
-    pub fn update_one_counter<F>(&mut self, r: usize, c: usize, op: F, v: T) -> ()
-    where
-        F: Fn(T, T) -> T,
-    {
-        self.data[r * self.col + c] = op(self.data[r * self.col + c].clone(), v);
-    }
-
-    pub fn fast_insert<F>(&mut self, op: F, v: T, hashed_val: u64) -> ()
-    where
-        F: Fn(T, T) -> T,
-    {
-        for r in 0..self.row {
-            let hashed = (hashed_val >> 12 * r) & (0x1 << 13 - 1);
-            let c = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
-            self.data[r * self.col + c] = op(self.data[r * self.col + c].clone(), v.clone());
-        }
-    }
-
-    pub fn query_one_counter(&self, r: usize, c: usize) -> T {
-        self.data[r * self.col + c].clone()
-    }
-
-    pub fn fast_query(&self, hashed_val: u64) -> T
-    where
-        T: Clone + Ord + Copy,
-    {
-        let mut min = self.data[(hashed_val as usize & (1 << 13 - 1) as usize) % self.col];
-        for r in 1..self.row {
-            let hashed = (hashed_val >> 12 * r) & (0x1 << 13 - 1);
-            let col = ((hashed & ((1u64 << 32) - 1)) as usize) % self.col;
-            min = min.min(self.data[r * self.col + col]);
-        }
-        min
-    }
-
-    pub fn get_row(self) -> usize {
-        self.row
-    }
-
-    pub fn get_col(self) -> usize {
-        self.col
-    }
-}
-
 impl<T> Vector3D<T> {
-    pub fn init(l: usize, r: usize, c: usize) -> Self {
-        Vector3D {
-            data: Vec::with_capacity(l * r * c),
-            layer: l,
-            row: r,
-            col: c,
+    pub fn init(layer: usize, row: usize, col: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(layer * row * col),
+            layer,
+            row,
+            col,
         }
     }
 }
