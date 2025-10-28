@@ -2,7 +2,7 @@ pub mod coco;
 pub mod count;
 // pub mod countmin;
 pub mod elastic;
-pub mod hyperloglog;
+// pub mod hyperloglog;
 pub mod locher;
 
 pub use coco::{Bucket as StructuredBucket, Coco as StructuredCoco};
