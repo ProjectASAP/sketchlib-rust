@@ -1,9 +1,7 @@
 pub mod common;
-pub mod deserializers;
-pub mod sketchbook;
+pub mod sketch_framework;
 pub mod sketches;
 
 pub use common::*;
-pub use deserializers::*;
-pub use sketchbook::*;
+pub use sketch_framework::*;
 pub use sketches::*;

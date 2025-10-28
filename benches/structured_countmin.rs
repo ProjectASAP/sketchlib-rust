@@ -1,8 +1,5 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use sketchlib_rust::{
-    CountMin, SketchInput,
-    sketches::{StructuredCount, StructuredCountMin, VectorCountMin},
-};
+use sketchlib_rust::{CountMin, SketchInput};
 
 fn insert_benchmark(c: &mut Criterion) {
     let updates: Vec<SketchInput<'static>> = (0..5_000)
@@ -13,7 +10,7 @@ fn insert_benchmark(c: &mut Criterion) {
 
     group.bench_function("matrix_insert", |b| {
         b.iter_batched(
-            || StructuredCountMin::with_dimensions(3, 4_096),
+            || CountMin::with_dimensions(3, 4_096),
             |mut sketch| {
                 for value in &updates {
                     sketch.insert(value);
@@ -26,7 +23,7 @@ fn insert_benchmark(c: &mut Criterion) {
 
     group.bench_function("matrix_fast_insert", |b| {
         b.iter_batched(
-            || StructuredCountMin::with_dimensions(3, 4_096),
+            || CountMin::with_dimensions(3, 4_096),
             |mut sketch| {
                 for value in &updates {
                     sketch.fast_insert(value);
@@ -39,7 +36,7 @@ fn insert_benchmark(c: &mut Criterion) {
 
     group.bench_function("vector_insert", |b| {
         b.iter_batched(
-            || VectorCountMin::with_dimensions(3, 4_096),
+            || CountMin::with_dimensions(3, 4_096),
             |mut sketch| {
                 for value in &updates {
                     sketch.insert(value);
@@ -52,7 +49,7 @@ fn insert_benchmark(c: &mut Criterion) {
 
     group.bench_function("vector_fast_insert", |b| {
         b.iter_batched(
-            || VectorCountMin::with_dimensions(3, 4_096),
+            || CountMin::with_dimensions(3, 4_096),
             |mut sketch| {
                 for value in &updates {
                     sketch.fast_insert(value);
@@ -92,7 +89,7 @@ fn estimate_benchmark(c: &mut Criterion) {
     group.bench_function("matrix_estimate", |b| {
         b.iter_batched(
             || {
-                let mut sketch = StructuredCountMin::with_dimensions(3, 4_096);
+                let mut sketch = CountMin::with_dimensions(3, 4_096);
                 for value in &updates {
                     sketch.insert(value);
                 }
@@ -110,7 +107,7 @@ fn estimate_benchmark(c: &mut Criterion) {
     group.bench_function("matrix_fast_estimate", |b| {
         b.iter_batched(
             || {
-                let mut sketch = StructuredCountMin::with_dimensions(3, 4_096);
+                let mut sketch = CountMin::with_dimensions(3, 4_096);
                 for value in &updates {
                     sketch.fast_insert(value);
                 }
@@ -128,7 +125,7 @@ fn estimate_benchmark(c: &mut Criterion) {
     group.bench_function("vector_estimate", |b| {
         b.iter_batched(
             || {
-                let mut sketch = VectorCountMin::with_dimensions(3, 4_096);
+                let mut sketch = CountMin::with_dimensions(3, 4_096);
                 for value in &updates {
                     sketch.insert(value);
                 }
@@ -146,7 +143,7 @@ fn estimate_benchmark(c: &mut Criterion) {
     group.bench_function("vector_fast_estimate", |b| {
         b.iter_batched(
             || {
-                let mut sketch = VectorCountMin::with_dimensions(3, 4_096);
+                let mut sketch = CountMin::with_dimensions(3, 4_096);
                 for value in &updates {
                     sketch.fast_insert(value);
                 }

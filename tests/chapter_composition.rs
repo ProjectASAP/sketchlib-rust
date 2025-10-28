@@ -1,8 +1,9 @@
 use sketchlib_rust::{
-    sketchbook::Chapter,
+    HllDf, HyperLogLog,
+    sketch_framework::Chapter,
     sketches::{
-        coco::Coco, countmin::CountMin, hll::HllDfModified, kll::KLL, locher::LocherSketch,
-        uniform::UniformSampling, univmon::UnivMon, utils::SketchInput,
+        coco::Coco, countmin::CountMin, kll::KLL, locher::LocherSketch, uniform::UniformSampling,
+        univmon::UnivMon, utils::SketchInput,
     },
 };
 
@@ -109,7 +110,7 @@ fn chapter_coco_supports_partial_queries() {
 #[test]
 fn chapter_hll_exposes_cardinality_estimate() {
     // HLL variant should expose an approximate distinct count via Chapter::query
-    let mut chapter = Chapter::HLL(HllDfModified::new());
+    let mut chapter = Chapter::HLL(HllDf::new());
     for value in 0..5_000u64 {
         chapter.insert(&SketchInput::U64(value));
     }
