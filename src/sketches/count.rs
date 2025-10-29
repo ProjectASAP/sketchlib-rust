@@ -72,19 +72,20 @@ impl Count {
     /// Inserts an observation with hash optimization of Count Sketch updating algorithm.
     /// The hash may be reused with other sketches
     pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
-        let mask_bits = self.counts.get_mask_bits();
+        let mask_bits = self.counts.get_mask_bits() as usize;
         let mask = (1u128 << mask_bits) - 1;
-        for r in 0..self.row {
-            let hashed = (hashed_val >> (mask_bits as usize * r)) & mask;
+        let mut shift_amount = 0; // Pre-compute shift to avoid multiplication in loop
+        let mut sign_bit_pos = 127; // Pre-compute sign bit position to avoid subtraction
+        for _r in 0..self.row {
+            let hashed = (hashed_val >> shift_amount) & mask;
             let col = (hashed as usize) % self.col;
-            // Extract sign bit from a different position in the original hash for each row
-            // Branchless: convert bit (0 or 1) to sign (-1 or 1)
-            // If bit is 1: 1 - 2*1 = -1 -> negate to get 1
-            // If bit is 0: 1 - 2*0 = 1 -> negate to get -1
-            let bit = ((hashed_val >> (127 - r)) & 1) as i64;
+            // Extract sign bit from high bits
+            let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
             self.counts
-                .update_one_counter(r, col, |a, b| *a += sign_bit * b, 1_i64);
+                .update_one_counter(_r, col, |a, b| *a += sign_bit * b, 1_i64);
+            shift_amount += mask_bits; // Increment instead of multiply
+            sign_bit_pos -= 1; // Decrement instead of subtract in expression
         }
     }
 
@@ -124,20 +125,22 @@ impl Count {
     /// Returns the frequency estimate for the provided value, with hash optimization.
     pub fn fast_estimate(&self, value: &SketchInput) -> f64 {
         let hashed_val = hash_it_to_128(0, value);
-        let mask_bits = self.counts.get_mask_bits();
+        let mask_bits = self.counts.get_mask_bits() as usize;
         let mask = (1u128 << mask_bits) - 1;
-        // self.counts.fast_query_median(hashed_val)
         let mut estimates = Vec::with_capacity(self.row);
+        let mut shift_amount = 0; // Pre-compute shift to avoid multiplication in loop
+        let mut sign_bit_pos = 127; // Pre-compute sign bit position to avoid subtraction
         for r in 0..self.row {
-            let hashed = (hashed_val >> (mask_bits as usize * r)) & mask;
+            let hashed = (hashed_val >> shift_amount) & mask;
             let col = (hashed as usize) % self.col;
-            // Extract sign bit from the same position used in fast_insert
-            // Branchless: convert bit (0 or 1) to sign (-1 or 1)
-            let bit = ((hashed_val >> (127 - r)) & 1) as i64;
+            // Extract sign bit from high bits
+            let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
             let counter = self.counts.query_one_counter(r, col);
             // Apply the sign
             estimates.push(sign_bit * counter);
+            shift_amount += mask_bits; // Increment instead of multiply
+            sign_bit_pos -= 1; // Decrement instead of subtract in expression
         }
         if estimates.is_empty() {
             return 0.0;
