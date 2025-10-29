@@ -58,7 +58,8 @@ impl CountMin {
     /// Inserts an observation while using the standard Count-Min minimum row update rule.
     pub fn insert(&mut self, value: &SketchInput) {
         for r in 0..self.row {
-            let hashed = hash_it(r, value);
+            // let hashed = hash_it(r, value);
+            let hashed = hash_for_enough_bits(r, value, 64) as u64;
             let col = ((hashed & LOWER_32_MASK) as usize) % self.col;
             self.counts
                 .update_one_counter(r, col, std::ops::Add::add, 1_u64);
@@ -69,6 +70,7 @@ impl CountMin {
     pub fn fast_insert(&mut self, value: &SketchInput) {
         let bits_required = self.counts.get_required_bits();
         let hashed_val = hash_for_enough_bits(0, value, bits_required);
+        // let hashed_val = hash_for_enough_bits(0, value, 128);
         self.counts
             .fast_insert(std::ops::Add::add, 1_u64, hashed_val);
     }
@@ -77,7 +79,8 @@ impl CountMin {
     pub fn estimate(&self, value: &SketchInput) -> u64 {
         let mut min = u64::MAX;
         for r in 0..self.row {
-            let hashed = hash_it(r, value);
+            // let hashed = hash_it(r, value);
+            let hashed = hash_for_enough_bits(r, value, 64) as u64;
             let col = ((hashed & LOWER_32_MASK) as usize) % self.col;
             // let idx = row * cols + col;
             min = min.min(self.counts.query_one_counter(r, col));
