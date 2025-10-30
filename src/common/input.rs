@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::CountL2HH;
+use crate::{CountL2HH, CountMin};
 
 /// enum to wrap input for sketch
 /// mainly supports primitive type
@@ -61,6 +61,12 @@ impl L2HH {
             }
         }
     }
+}
+
+/// enum that can be used as counter in Hydra
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum HydraCounter {
+    CM(CountMin),
 }
 
 /// A key-count pair used in heap-based sketches for tracking heavy hitters.
