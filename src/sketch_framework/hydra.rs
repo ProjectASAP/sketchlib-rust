@@ -1,10 +1,8 @@
-use std::cmp::Ordering;
-
 use serde::{Deserialize, Serialize};
 
 use crate::input::{HydraCounter, HydraQuery};
 use crate::sketches::countmin::CountMin;
-use crate::{SketchInput, Vector2D, hash_it_to_128};
+use crate::{HYDRA_SEED, SketchInput, Vector2D, hash_it_to_128};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hydra {
@@ -47,18 +45,15 @@ impl Hydra {
             }
             result.push(current_combination.join(";"));
         }
-        // println!("UPDATE: generated subkeys: {:?}", result);
-        for i in 0..self.row_num {
-            for subkey in &result {
-                let hash = hash_it_to_128(i, &SketchInput::String(subkey.to_string()));
-                let bucket = (hash as usize) % self.col_num;
-                // println!("UPDATE: row={}, subkey={}, bucket={}", i, subkey, bucket);
-                self.sketches[i][bucket].insert(value);
-            }
+
+        for subkey in &result {
+            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
+            self.sketches.fast_insert(|a, b| a.insert(b), value, hash);
         }
     }
 
     /// Query the Hydra sketch for a specific subpopulation
+    /// Assume `key` appears in-order
     ///
     /// # Arguments
     /// * `key` - The subpopulation key as a vector of dimension values (e.g., ["city", "device"])
@@ -66,44 +61,14 @@ impl Hydra {
     ///
     /// # Returns
     /// The estimated statistic (median of r row estimates)
-    ///
-    /// # Algorithm
-    /// 1. Hash the key to r different sketch instances (one per row)
-    /// 2. Query each sketch instance
-    /// 3. Return the median of the r estimates
-    ///
-    /// This follows the Hydra paper's query algorithm for robust estimation.
     pub fn query_key(&self, key: Vec<&str>, query: &HydraQuery) -> f64 {
-        let mut estimates = Vec::with_capacity(self.row_num);
         let key_string = key.join(";");
-
-        // Query each row and collect estimates
-        for i in 0..self.row_num {
-            let hash_value = hash_it_to_128(i, &SketchInput::String(key_string.clone()));
-            let col_index = (hash_value as usize) % self.col_num;
-            match self.sketches[i][col_index].query(query) {
-                Ok(v) => estimates.push(v),
-                Err(_) => (), // Skip failed queries (type mismatch)
-            }
-        }
-
-        // If all queries failed, return 0.0
-        if estimates.is_empty() {
-            return 0.0;
-        }
-
-        // Return median estimate for robustness (as per Hydra paper)
-        estimates.sort_by(|a, b| match a.partial_cmp(b) {
-            Some(ordering) => ordering,
-            None => Ordering::Equal,
-        });
-
-        let mid = estimates.len() / 2;
-        if estimates.len() % 2 == 0 {
-            (estimates[mid - 1] + estimates[mid]) / 2.0
-        } else {
-            estimates[mid]
-        }
+        let hashed_val = hash_it_to_128(HYDRA_SEED, &SketchInput::String(key_string.to_string()));
+        self.sketches.fast_query_median_with_key(
+            hashed_val,
+            |counter, q| counter.query(q).unwrap(),
+            query,
+        )
     }
 
     /// Convenience method for querying frequency (for CountMin-based Hydra)
@@ -199,6 +164,169 @@ mod tests {
         let unrelated_value = SketchInput::I64(0);
         let unrelated = hydra.query_frequency(vec!["other"], &unrelated_value);
         assert_eq!(unrelated, 0.0);
+    }
+
+    #[test]
+    fn hydra_subpopulation_frequency_test() {
+        // Build test dataset using CountMin for frequency queries
+        let mut hydra = Hydra::with_dimensions(3, 64, HydraCounter::CM(CountMin::default()));
+
+        let dataset = [
+            ("key1;key2;key3", 10.0),
+            ("key1;key2;key4", 10.0),
+            ("key1;key2;key3", 20.0),
+            ("key1;key2;key3", 30.0),
+            ("key4;key5;key6", 40.0),
+            ("key4;key5;key6", 50.0),
+            ("key4;key5;key6", 60.0),
+            ("key7;key8;key9", 70.0),
+            ("key7;key8;key9", 80.0),
+            ("key7;key8;key9", 90.0),
+        ];
+
+        // Insert all data points
+        for (key, value) in dataset {
+            let input = SketchInput::F64(value);
+            hydra.update(key, &input);
+        }
+
+        // Test single label subpopulation queries
+        // key1 appears in 3 entries with values 10.0, 20.0, 30.0
+        let freq_10 = hydra.query_frequency(vec!["key1"], &SketchInput::F64(10.0));
+        assert_eq!(
+            freq_10, 2.0,
+            "expected frequency of 10.0 for key1 to be 2, got {}",
+            freq_10
+        );
+
+        let freq_20 = hydra.query_frequency(vec!["key1"], &SketchInput::F64(20.0));
+        assert_eq!(
+            freq_20, 1.0,
+            "expected frequency of 20.0 for key1 to be 1, got {}",
+            freq_20
+        );
+
+        let freq_30 = hydra.query_frequency(vec!["key1"], &SketchInput::F64(30.0));
+        assert_eq!(
+            freq_30, 1.0,
+            "expected frequency of 30.0 for key1 to be 1, got {}",
+            freq_30
+        );
+
+        // key4 appears in 3 entries with values 40.0, 50.0, 60.0
+        let freq_40 = hydra.query_frequency(vec!["key4"], &SketchInput::F64(40.0));
+        assert_eq!(
+            freq_40, 1.0,
+            "expected frequency of 40.0 for key4 to be 1, got {}",
+            freq_40
+        );
+
+        // Test multi-label subpopulation queries
+        let freq_multi = hydra.query_frequency(vec!["key1", "key3"], &SketchInput::F64(10.0));
+        assert_eq!(
+            freq_multi, 1.0,
+            "expected frequency of 10.0 for key1;key to be 1, got {}",
+            freq_multi
+        );
+
+        // key1;key2;key3 is the full key appearing 3 times
+        let freq_full =
+            hydra.query_frequency(vec!["key1", "key2", "key3"], &SketchInput::F64(20.0));
+        assert_eq!(
+            freq_full, 1.0,
+            "expected frequency of 20.0 for key1;key2;key3 to be 1, got {}",
+            freq_full
+        );
+
+        // Test cross-population queries (should be 0 as key1 and key8 never appear together)
+        let freq_cross = hydra.query_frequency(vec!["key1", "key8"], &SketchInput::F64(10.0));
+        assert_eq!(
+            freq_cross, 0.0,
+            "expected frequency of 10.0 for key1;key8 to be 0/empty, got {}",
+            freq_cross
+        );
+    }
+
+    #[test]
+    fn hydra_subpopulation_cardinality_test() {
+        use crate::sketches::hll::HllDf;
+
+        // Build test dataset using HyperLogLog for cardinality queries
+        let mut hydra = Hydra::with_dimensions(5, 128, HydraCounter::HLL(HllDf::new()));
+
+        let dataset = [
+            ("key1;key2;key3", 10.0),
+            ("key1;key2;key3", 20.0),
+            ("key1;key2;key3", 30.0),
+            ("key4;key5;key6", 40.0),
+            ("key4;key5;key6", 50.0),
+            ("key4;key5;key6", 60.0),
+            ("key7;key8;key9", 70.0),
+            ("key7;key8;key9", 80.0),
+            ("key7;key8;key9", 90.0),
+        ];
+
+        // Insert all data points (HLL tracks distinct values)
+        for (key, value) in dataset {
+            let input = SketchInput::F64(value);
+            hydra.update(key, &input);
+        }
+
+        // Test single label cardinality
+        // key1 appears with 3 distinct values: 10.0, 20.0, 30.0
+        let card_key1 = hydra.query_key(vec!["key1"], &HydraQuery::Cardinality);
+        assert!(
+            (card_key1 - 3.0).abs() < EPSILON,
+            "expected cardinality near 3 for key1, got {}",
+            card_key1
+        );
+
+        // key4 appears with 3 distinct values: 40.0, 50.0, 60.0
+        let card_key4 = hydra.query_key(vec!["key4"], &HydraQuery::Cardinality);
+        assert!(
+            (card_key4 - 3.0).abs() < EPSILON,
+            "expected cardinality near 3 for key4, got {}",
+            card_key4
+        );
+
+        // key7 appears with 3 distinct values: 70.0, 80.0, 90.0
+        let card_key7 = hydra.query_key(vec!["key7"], &HydraQuery::Cardinality);
+        assert!(
+            (card_key7 - 3.0).abs() < EPSILON,
+            "expected cardinality near 3 for key7, got {}",
+            card_key7
+        );
+
+        // Test multi-label cardinality
+        // key1;key2 appears together with 3 distinct values
+        let card_multi = hydra.query_key(vec!["key1", "key2"], &HydraQuery::Cardinality);
+        assert!(
+            (card_multi - 3.0).abs() < EPSILON,
+            "expected cardinality near 3 for key1;key2, got {}",
+            card_multi
+        );
+
+        // key1;key2;key3 is the full key with 3 distinct values
+        let card_full = hydra.query_key(vec!["key1", "key2", "key3"], &HydraQuery::Cardinality);
+        assert!(
+            (card_full - 3.0).abs() < EPSILON,
+            "expected cardinality near 3 for key1;key2;key3, got {}",
+            card_full
+        );
+
+        // Test cross-population queries (should be 0 as key1 and key7 never appear together)
+        let card_cross = hydra.query_key(vec!["key1", "key7"], &HydraQuery::Cardinality);
+        assert_eq!(
+            card_cross, 0.0,
+            "expected cardinality 0 for non-overlapping keys"
+        );
+
+        // Test unrelated key (never inserted)
+        let card_unrelated = hydra.query_key(vec!["unknown"], &HydraQuery::Cardinality);
+        assert_eq!(
+            card_unrelated, 0.0,
+            "expected cardinality 0 for unknown key"
+        );
     }
 
     // #[test]

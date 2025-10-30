@@ -144,10 +144,8 @@ impl HydraCounter {
             (HydraCounter::HLL(h1), HydraCounter::HLL(h2)) => {
                 h1.merge(h2);
                 Ok(())
-            },
-            (_,_) => {
-                Err("Sketch Type in Hydra Counter different, cannot merge".to_string())
-            },
+            }
+            (_, _) => Err("Sketch Type in Hydra Counter different, cannot merge".to_string()),
         }
     }
 }
