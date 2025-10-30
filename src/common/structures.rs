@@ -348,19 +348,50 @@ impl<T> Vector2D<T> {
             let hashed = (hashed_val >> (mask_bits as usize * r)) & mask;
             let col = (hashed as usize) % self.cols;
             let idx = r * self.cols + col;
-            estimates.push(self.data[idx]);
+            estimates.push(self.data[idx].to_f64());
         }
-        if estimates.is_empty() {
+
+        // Inline median computation
+        self.compute_median_inline_f64(&mut estimates)
+    }
+
+    /// Queries all rows with query_key `q` using precomputed hashed values to find the median.
+    ///
+    /// Note: This method requires T to be convertible to f64 for median calculation.
+    /// # Arguments
+    /// * `op` - Function that applies to counter T
+    /// * `q` - Query Key
+    #[inline(always)]
+    pub fn fast_query_median_with_key<F, Q>(&self, hashed_val: u128, op: F, q: &Q) -> f64
+    where
+        F: Fn(&T, &Q) -> f64,
+    {
+        let mask_bits = self.get_mask_bits();
+        let mask = (1u128 << mask_bits) - 1;
+        let mut estimates = Vec::with_capacity(self.rows);
+        for r in 0..self.rows {
+            let hashed = (hashed_val >> (mask_bits as usize * r)) & mask;
+            let col = (hashed as usize) % self.cols;
+            let idx = r * self.cols + col;
+            estimates.push(op(&self.data[idx], q));
+        }
+
+        self.compute_median_inline_f64(&mut estimates)
+    }
+
+    /// Compute median from a mutable slice of f64 values (inline helper)
+    /// This is used by query_median_with_custom_hash for HydraCounter queries
+    #[inline(always)]
+    fn compute_median_inline_f64(&self, values: &mut [f64]) -> f64 {
+        if values.is_empty() {
             return 0.0;
         }
-        estimates.sort_unstable();
-        let mid = estimates.len() / 2;
-        if estimates.len() % 2 == 1 {
-            estimates[mid].to_f64()
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = values.len() / 2;
+        if values.len() % 2 == 1 {
+            values[mid]
         } else {
-            let left = estimates[mid - 1].to_f64();
-            let right = estimates[mid].to_f64();
-            (left + right) / 2.0
+            (values[mid - 1] + values[mid]) / 2.0
         }
     }
 

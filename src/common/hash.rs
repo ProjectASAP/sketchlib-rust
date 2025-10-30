@@ -4,6 +4,7 @@ use super::SketchInput;
 
 pub const LASTSTATE: usize = 5;
 pub const BOTTOM_LAYER_FINDER: usize = 19;
+pub const HYDRA_SEED: usize = 6;
 
 const MASK_32BITS: u64 = (1 << 32) - 1;
 
