@@ -14,14 +14,11 @@ pub enum Chapter<'a> {
     HLL(HllDf),
     KLL(KLL),
     UNIFORM(UniformSampling),
-    LOCHER(LocherSketch),
-    UNIVMON(UnivMon),
+    // LOCHER(LocherSketch),
+    // UNIVMON(UnivMon),
 }
 
-#[derive(Clone, Debug)]
-pub enum L2HH {
-    // COUNT(VectorCount),
-}
+
 
 // impl L2HH {
 //     /// Creates a count-based L2 heavy hitter sketch with the requested dimensions.
@@ -129,21 +126,21 @@ impl<'a> Chapter<'a> {
             Chapter::UNIFORM(sketch) => {
                 let _ = sketch.update_input(val);
             }
-            Chapter::LOCHER(sketch) => {
-                // Locher requires a String
-                if let SketchInput::String(s) = val {
-                    sketch.insert(s, 1);
-                }
-            }
-            Chapter::UNIVMON(sketch) => {
-                // UnivMon requires update with key, value, bottom_layer_num
-                // Using default bottom_layer_num of 0
-                if let SketchInput::Str(s) = val {
-                    sketch.update(s, 1, 0);
-                } else if let SketchInput::String(s) = val {
-                    sketch.update(s.as_str(), 1, 0);
-                }
-            }
+            // Chapter::LOCHER(sketch) => {
+            //     // Locher requires a String
+            //     if let SketchInput::String(s) = val {
+            //         sketch.insert(s, 1);
+            //     }
+            // }
+            // Chapter::UNIVMON(sketch) => {
+            //     // UnivMon requires update with key, value, bottom_layer_num
+            //     // Using default bottom_layer_num of 0
+            //     if let SketchInput::Str(s) = val {
+            //         sketch.update(s, 1, 0);
+            //     } else if let SketchInput::String(s) = val {
+            //         sketch.update(s.as_str(), 1, 0);
+            //     }
+            // }
         }
     }
 
@@ -179,10 +176,10 @@ impl<'a> Chapter<'a> {
             //     s.merge(o);
             //     Ok(())
             // }, // not yet
-            (Chapter::UNIVMON(s), Chapter::UNIVMON(o)) => {
-                s.merge_with(o);
-                Ok(())
-            }
+            // (Chapter::UNIVMON(s), Chapter::UNIVMON(o)) => {
+            //     s.merge_with(o);
+            //     Ok(())
+            // }
             _ => Err("Cannot merge sketches of different types"),
         }
     }
@@ -224,7 +221,7 @@ impl<'a> Chapter<'a> {
                 "total_seen" => Ok(sampler.total_seen() as f64),
                 _ => Err("Unsupported command for UniformSampling"),
             },
-            (Chapter::LOCHER(locher_sketch), SketchInput::Str(s)) => Ok(locher_sketch.estimate(*s)),
+            // (Chapter::LOCHER(locher_sketch), SketchInput::Str(s)) => Ok(locher_sketch.estimate(*s)),
             _ => Err("Parameter type and Sketch Type Mismatched"),
         }
     }
@@ -239,8 +236,8 @@ impl<'a> Chapter<'a> {
             Chapter::HLL(_) => "HLL",
             Chapter::KLL(_) => "KLL",
             Chapter::UNIFORM(_) => "UniformSampling",
-            Chapter::LOCHER(_) => "Locher",
-            Chapter::UNIVMON(_) => "UnivMon",
+            // Chapter::LOCHER(_) => "Locher",
+            // Chapter::UNIVMON(_) => "UnivMon",
         }
     }
 }

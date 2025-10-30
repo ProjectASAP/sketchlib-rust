@@ -445,7 +445,7 @@ impl<T> Vector3D<T> {
 
 /// Trait defining heap ordering behavior.
 /// Implement this trait to define custom heap orderings.
-pub trait HeapOrder<T> {
+pub trait CommonHeapOrder<T> {
     /// Returns true if parent and child should be swapped.
     /// This determines whether the heap is min or max, and what property to compare.
     fn should_swap(&self, parent: &T, child: &T) -> bool;
@@ -458,9 +458,9 @@ pub trait HeapOrder<T> {
 
 /// Min-heap ordering: smaller values have higher priority (bubble up).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MinHeap;
+pub struct CommonMinHeap;
 
-impl<T: Ord> HeapOrder<T> for MinHeap {
+impl<T: Ord> CommonHeapOrder<T> for CommonMinHeap {
     #[inline(always)]
     fn should_swap(&self, parent: &T, child: &T) -> bool {
         child < parent
@@ -475,9 +475,9 @@ impl<T: Ord> HeapOrder<T> for MinHeap {
 
 /// Max-heap ordering: larger values have higher priority (bubble up).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MaxHeap;
+pub struct CommonMaxHeap;
 
-impl<T: Ord> HeapOrder<T> for MaxHeap {
+impl<T: Ord> CommonHeapOrder<T> for CommonMaxHeap {
     #[inline(always)]
     fn should_swap(&self, parent: &T, child: &T) -> bool {
         child > parent
@@ -490,30 +490,15 @@ impl<T: Ord> HeapOrder<T> for MaxHeap {
     }
 }
 
-/// Generic heap structure supporting both min and max heaps with custom orderings.
-///
-/// # Type Parameters
-/// - `T`: The type of elements stored in the heap
-/// - `O`: The heap ordering strategy (MinHeap, MaxHeap, or custom)
-///
-/// # Examples
-/// ```
-/// // Min heap for primitive types
-/// let mut min_heap = Heap::<u64, MinHeap>::with_capacity(100);
-///
-/// // Max heap for primitive types
-/// let mut max_heap = Heap::<i64, MaxHeap>::with_capacity(50);
-///
-/// // For custom types, implement Ord or create custom HeapOrder
-/// ```
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Heap<T, O: HeapOrder<T>> {
+pub struct CommonHeap<T, O: CommonHeapOrder<T>> {
     data: Vec<T>,
     size: usize,
     order: O,
 }
 
-impl<T, O: HeapOrder<T>> Heap<T, O> {
+impl<T, O: CommonHeapOrder<T>> CommonHeap<T, O> {
     /// Creates a new heap with the specified capacity and ordering.
     pub fn with_capacity(capacity: usize, order: O) -> Self {
         Self {
@@ -658,7 +643,11 @@ impl<T, O: HeapOrder<T>> Heap<T, O> {
             if left < len && self.order.should_swap(&self.data[target], &self.data[left]) {
                 target = left;
             }
-            if right < len && self.order.should_swap(&self.data[target], &self.data[right]) {
+            if right < len
+                && self
+                    .order
+                    .should_swap(&self.data[target], &self.data[right])
+            {
                 target = right;
             }
 
@@ -677,7 +666,10 @@ impl<T, O: HeapOrder<T>> Heap<T, O> {
     fn bubble_up(&mut self, mut idx: usize) {
         while idx > 0 {
             let parent_idx = Self::parent(idx);
-            if self.order.should_swap(&self.data[parent_idx], &self.data[idx]) {
+            if self
+                .order
+                .should_swap(&self.data[parent_idx], &self.data[idx])
+            {
                 self.data.swap(parent_idx, idx);
                 idx = parent_idx;
             } else {
@@ -688,23 +680,23 @@ impl<T, O: HeapOrder<T>> Heap<T, O> {
 }
 
 // Convenience constructors for common heap types
-impl<T: Ord> Heap<T, MinHeap> {
+impl<T: Ord> CommonHeap<T, CommonMinHeap> {
     /// Creates a new min-heap with the specified capacity.
     #[inline]
     pub fn new_min(capacity: usize) -> Self {
-        Self::with_capacity(capacity, MinHeap)
+        Self::with_capacity(capacity, CommonMinHeap)
     }
 }
 
-impl<T: Ord> Heap<T, MaxHeap> {
+impl<T: Ord> CommonHeap<T, CommonMaxHeap> {
     /// Creates a new max-heap with the specified capacity.
     #[inline]
     pub fn new_max(capacity: usize) -> Self {
-        Self::with_capacity(capacity, MaxHeap)
+        Self::with_capacity(capacity, CommonMaxHeap)
     }
 }
 
-impl<T, O: HeapOrder<T>> Index<usize> for Heap<T, O> {
+impl<T, O: CommonHeapOrder<T>> Index<usize> for CommonHeap<T, O> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -712,7 +704,7 @@ impl<T, O: HeapOrder<T>> Index<usize> for Heap<T, O> {
     }
 }
 
-impl<T, O: HeapOrder<T>> IndexMut<usize> for Heap<T, O> {
+impl<T, O: CommonHeapOrder<T>> IndexMut<usize> for CommonHeap<T, O> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.data[index]
     }
@@ -720,12 +712,12 @@ impl<T, O: HeapOrder<T>> IndexMut<usize> for Heap<T, O> {
 
 #[cfg(test)]
 mod heap_tests {
-    use super::*;
-    use crate::common::input::Item;
+    use crate::{CommonHeap, CommonHeapOrder, CommonMaxHeap, CommonMinHeap, common::input::HHItem};
 
     #[test]
     fn test_min_heap_basic() {
-        let mut heap = Heap::<i32, MinHeap>::new_min(5);
+        let mut heap = 
+        CommonHeap::<i32, CommonMinHeap>::new_min(5);
         heap.push(5);
         heap.push(3);
         heap.push(7);
@@ -741,7 +733,7 @@ mod heap_tests {
 
     #[test]
     fn test_max_heap_basic() {
-        let mut heap = Heap::<i32, MaxHeap>::new_max(5);
+        let mut heap = CommonHeap::<i32, CommonMaxHeap>::new_max(5);
         heap.push(5);
         heap.push(3);
         heap.push(7);
@@ -757,7 +749,8 @@ mod heap_tests {
 
     #[test]
     fn test_bounded_heap_capacity() {
-        let mut heap = Heap::<i32, MinHeap>::new_min(3);
+        let mut heap = 
+        CommonHeap::<i32, CommonMinHeap>::new_min(3);
 
         heap.push(5);
         heap.push(3);
@@ -783,7 +776,8 @@ mod heap_tests {
 
     #[test]
     fn test_update_at() {
-        let mut heap = Heap::<i32, MinHeap>::new_min(5);
+        let mut heap = 
+        CommonHeap::<i32, CommonMinHeap>::new_min(5);
         heap.push(10);
         heap.push(20);
         heap.push(5);
@@ -797,10 +791,11 @@ mod heap_tests {
 
     #[test]
     fn test_custom_struct_with_ord() {
-        let mut heap = Heap::<Item, MinHeap>::new_min(3);
-        heap.push(Item::new("five".to_string(), 5));
-        heap.push(Item::new("three".to_string(), 3));
-        heap.push(Item::new("seven".to_string(), 7));
+        let mut heap = 
+        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        heap.push(HHItem::new("five".to_string(), 5));
+        heap.push(HHItem::new("three".to_string(), 3));
+        heap.push(HHItem::new("seven".to_string(), 7));
 
         assert_eq!(heap.peek().map(|item| item.count), Some(3));
     }
@@ -811,11 +806,12 @@ mod heap_tests {
         // Use min-heap so smallest is at root and can be evicted
 
         // Create a min-heap with capacity 3 to keep top-3 items
-        let mut heap = Heap::<Item, MinHeap>::new_min(3);
+        let mut heap = 
+        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
 
         // Insert items (simulating TopKHeap behavior)
         for i in 1..=5 {
-            heap.push(Item::new(format!("key-{}", i), i));
+            heap.push(HHItem::new(format!("key-{}", i), i));
         }
 
         // Should keep top 3: counts 3, 4, 5
@@ -836,8 +832,8 @@ mod heap_tests {
         use std::mem::size_of;
 
         let vec_size = size_of::<Vec<u64>>();
-        let heap_min_size = size_of::<Heap<u64, MinHeap>>();
-        let heap_max_size = size_of::<Heap<u64, MaxHeap>>();
+        let heap_min_size = size_of::<CommonHeap<u64, CommonMinHeap>>();
+        let heap_max_size = size_of::<CommonHeap<u64, CommonMaxHeap>>();
 
         println!("Vec<u64> size: {}", vec_size);
         println!("Heap<u64, MinHeap> size: {}", heap_min_size);
@@ -857,23 +853,23 @@ mod heap_tests {
         #[derive(Clone)]
         struct CompareByCount;
 
-        impl HeapOrder<Item> for CompareByCount {
-            fn should_swap(&self, parent: &Item, child: &Item) -> bool {
+        impl CommonHeapOrder<HHItem> for CompareByCount {
+            fn should_swap(&self, parent: &HHItem, child: &HHItem) -> bool {
                 child.count < parent.count
             }
 
-            fn should_replace_root(&self, root: &Item, new_value: &Item) -> bool {
+            fn should_replace_root(&self, root: &HHItem, new_value: &HHItem) -> bool {
                 new_value.count > root.count
             }
         }
 
-        let mut heap = Heap::<Item, CompareByCount>::with_capacity(3, CompareByCount);
+        let mut heap = CommonHeap::<HHItem, CompareByCount>::with_capacity(3, CompareByCount);
 
-        heap.push(Item::new("a".to_string(), 5));
-        heap.push(Item::new("b".to_string(), 3));
-        heap.push(Item::new("c".to_string(), 7));
-        heap.push(Item::new("d".to_string(), 1)); // Won't be added
-        heap.push(Item::new("e".to_string(), 10)); // Will replace min
+        heap.push(HHItem::new("a".to_string(), 5));
+        heap.push(HHItem::new("b".to_string(), 3));
+        heap.push(HHItem::new("c".to_string(), 7));
+        heap.push(HHItem::new("d".to_string(), 1)); // Won't be added
+        heap.push(HHItem::new("e".to_string(), 10)); // Will replace min
 
         assert_eq!(heap.len(), 3);
         let min_count = heap.peek().map(|item| item.count);
@@ -885,10 +881,12 @@ mod heap_tests {
         // This test demonstrates EXACT TopKHeap behavior using generic Heap
 
         // TopKHeap::init_heap(3) equivalent:
-        let mut heap = Heap::<Item, MinHeap>::new_min(3);
+        let mut heap = 
+        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
 
         // TopKHeap::update("key-1", 1) equivalent:
-        let mut find_and_update = |heap: &mut Heap<Item, MinHeap>, key: &str, count: i64| {
+        let find_and_update = 
+        |heap: &mut CommonHeap<HHItem, CommonMinHeap>, key: &str, count: i64| {
             // TopKHeap::find() equivalent:
             let idx_opt = heap.iter().position(|item| item.key == key);
 
@@ -898,7 +896,7 @@ mod heap_tests {
                 heap.update_at(idx);
             } else {
                 // Not found: insert (TopKHeap::insert equivalent)
-                heap.push(Item::new(key.to_string(), count));
+                heap.push(HHItem::new(key.to_string(), count));
             }
         };
 

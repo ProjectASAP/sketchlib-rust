@@ -14,10 +14,6 @@ pub mod elastic;
 pub use elastic::Elastic;
 pub use elastic::HeavyBucket;
 
-pub mod heap;
-pub use crate::common::input::Item;
-pub use heap::TopKHeap;
-
 pub mod hll;
 pub use hll::HllDf;
 pub use hll::HllDs;
@@ -31,7 +27,7 @@ pub mod kll;
 pub use kll::KLL;
 
 pub mod locher;
-pub use locher::LocherSketch;
+// pub use locher::LocherSketch;
 
 pub mod microscope;
 pub use microscope::MicroScope;
@@ -39,8 +35,6 @@ pub use microscope::MicroScope;
 pub mod uniform;
 pub use uniform::UniformSampling;
 
-pub mod univmon;
-pub use univmon::UnivMon;
 
 pub mod utils;
 // pub use utils::SEED;

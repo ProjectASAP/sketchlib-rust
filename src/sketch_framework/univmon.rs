@@ -1,5 +1,7 @@
-use super::{CountL2HH, TopKHeap};
+use crate::common::{L2HH, Vector1D};
 use crate::common::{LASTSTATE, SketchInput, hash_it};
+use crate::sketches::count::CountL2HH;
+use crate::common::heap::HHHeap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -8,10 +10,8 @@ pub struct UnivMon {
     pub row: usize,
     pub col: usize,
     pub layer: usize,
-    pub cs_layers: Vec<CountL2HH>,
-    pub hh_layers: Vec<TopKHeap>,
-    pub max_time: usize, // as most machine will be 64 bit, usize should suffice
-    pub min_time: usize, // for sliding window model
+    pub cs_layers: Vector1D<L2HH>,
+    pub hh_layers: Vector1D<HHHeap>,
     pub pool_idx: i64,
     pub heap_update: i32,
     pub bucket_size: usize,
@@ -19,97 +19,98 @@ pub struct UnivMon {
 
 impl UnivMon {
     pub fn init_univmon(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self {
-        let mut um = UnivMon {
-            k: k,
+        // Create cs_layers - each layer needs different seeds
+        let cs_vec: Vec<L2HH> = (0..l)
+            .map(|_| L2HH::COUNT(CountL2HH::default()))
+            .collect();
+
+        // Create hh_layers
+        let hh_vec: Vec<HHHeap> = (0..l)
+            .map(|_| HHHeap::new(k))
+            .collect();
+
+        UnivMon {
+            k,
             row: r,
             col: c,
             layer: l,
-            cs_layers: Vec::new(),
-            hh_layers: Vec::new(),
-            max_time: 0,
-            min_time: 0,
+            cs_layers: Vector1D::from_vec(cs_vec),
+            hh_layers: Vector1D::from_vec(hh_vec),
             pool_idx: p_idx,
             heap_update: 0,
             bucket_size: 0,
-        };
-        for _ in 0..l {
-            // every Count sketch will have different seeds
-            // not sure if this is going to be a problem
-            um.cs_layers.push(CountL2HH::default());
-            um.hh_layers.push(TopKHeap::init_heap(k as u32));
         }
-        um
     }
 
     pub fn get_bucket_size(&self) -> usize {
         self.bucket_size
     }
 
-    pub fn new_univmon_pytamid(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self {
-        let mut um = UnivMon {
-            k: k,
+    pub fn new_univmon_pyramid(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self {
+        // 8 is ELEPHANT_LAYER in PromSketch
+        let cs_vec: Vec<L2HH> = if l <= 8 {
+            (0..l)
+                .map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 2048)))
+                .collect()
+        } else {
+            (0..8)
+                .map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 2048)))
+                .chain((8..l).map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 512))))
+                .collect()
+        };
+
+        let hh_vec: Vec<HHHeap> = if l <= 8 {
+            (0..l)
+                .map(|_| HHHeap::new(k))
+                .collect()
+        } else {
+            (0..l)
+                .map(|_| HHHeap::new(100))
+                .collect()
+        };
+
+        UnivMon {
+            k,
             row: r,
             col: c,
             layer: l,
-            cs_layers: Vec::new(),
-            hh_layers: Vec::new(),
-            max_time: 0,
-            min_time: 0,
+            cs_layers: Vector1D::from_vec(cs_vec),
+            hh_layers: Vector1D::from_vec(hh_vec),
             pool_idx: p_idx,
             heap_update: 0,
             bucket_size: 0,
-        };
-        // 8 is ELEPHANT_LAYER in PromSketch
-        // hardcode now
-        if l <= 8 {
-            for _ in 0..l {
-                // every Count sketch will have different seeds
-                // not sure if this is going to be a problem
-                um.cs_layers.push(CountL2HH::with_dimensions(3, 2048));
-                um.hh_layers.push(TopKHeap::init_heap(k as u32));
-            }
-        } else {
-            for _ in 0..8 {
-                um.cs_layers.push(CountL2HH::with_dimensions(3, 2048));
-                um.hh_layers.push(TopKHeap::init_heap(100));
-            }
-            for _ in 8..l {
-                um.cs_layers.push(CountL2HH::with_dimensions(3, 512));
-                um.hh_layers.push(TopKHeap::init_heap(100));
-            }
         }
-        um
     }
 
-    pub fn free(&mut self) {
-        self.bucket_size = 0;
+    // pub fn free(&mut self) {
+    //     self.bucket_size = 0;
 
-        self.cs_layers.clear();
-        self.hh_layers.clear();
-    }
+    //     self.cs_layers.clear();
+    //     self.hh_layers.clear();
+    // }
 
     // well... I'm not confident about this function
-    pub fn get_memory_kb(&self) -> f64 {
-        let mut total = 0.0;
-        for i in 0..self.layer {
-            total += self.hh_layers[i].get_memory_bytes();
-        }
-        return (2048.0 * 3.0 * (self.layer as f64) * 8.0 + total) / 1024.0;
-    }
+    // pub fn get_memory_kb(&self) -> f64 {
+    //     let mut total = 0.0;
+    //     for i in 0..self.layer {
+    //         total += self.hh_layers[i].get_memory_bytes();
+    //     }
+    //     return (2048.0 * 3.0 * (self.layer as f64) * 8.0 + total) / 1024.0;
+    // }
 
-    pub fn get_memory_kb_pyramid(&self) -> f64 {
-        let mut total = 0.0;
-        for i in 0..self.layer {
-            total += self.hh_layers[i].get_memory_bytes();
-        }
-        // again, hard code the ELEPHANT_LAYER for now
-        if self.layer <= 8 {
-            return (2048.0 * 3.0 * (self.layer as f64) * 8.0 + total) / 1024.0;
-        } else {
-            return ((2048.0 * 3.0 * 8.0 + 512.0 * 3.0 * (self.layer as f64 - 8.0)) * 8.0 + total)
-                / 1024.0;
-        }
-    }
+    // pub fn get_memory_kb_pyramid(&self) -> f64 {
+    //     let mut total = 0.0;
+    //     for i in 0..self.layer {
+    //         total += self.hh_layers[i].get_memory_bytes();
+    //     }
+    //     // again, hard code the ELEPHANT_LAYER for now
+    //     if self.layer <= 8 {
+    //         return (2048.0 * 3.0 * (self.layer as f64) * 8.0 + total) / 1024.0;
+    //     } else {
+    //         return ((2048.0 * 3.0 * 8.0 + 512.0 * 3.0 * (self.layer as f64 - 8.0)) * 8.0 + total)
+    //             / 1024.0;
+    //     }
+    // }
 
     // update univmon
     pub fn find_bottom_layer_num(&self, hash: u64, layer: usize) -> usize {
@@ -213,13 +214,13 @@ impl UnivMon {
         self.update_optimized(key, value, bottom_layer_num);
     }
 
-    pub fn print_hh_layer(&self) {
-        print!("Print HH_Layer: ");
-        for i in 0..self.layer {
-            println!("layer {}: ", i);
-            self.hh_layers[i].print_heap();
-        }
-    }
+    // pub fn print_hh_layer(&self) {
+    //     print!("Print HH_Layer: ");
+    //     for i in 0..self.layer {
+    //         println!("layer {}: ", i);
+    //         self.hh_layers[i].print_heap();
+    //     }
+    // }
 
     pub fn calc_g_sum_heuristic<F>(&self, g: F, is_card: bool) -> f64
     where
@@ -235,7 +236,7 @@ impl UnivMon {
         }
 
         tmp = 0.0;
-        for item in &self.hh_layers[self.layer - 1].heap {
+        for item in self.hh_layers[self.layer - 1].heap() {
             if item.count > threshold {
                 tmp += g(item.count as f64);
             }
@@ -250,7 +251,7 @@ impl UnivMon {
                 threshold = 0;
             }
 
-            for item in &self.hh_layers[i].heap {
+            for item in self.hh_layers[i].heap() {
                 if item.count > threshold {
                     // let hash = (hash_it(LASTSTATE, &item.key) >> (i+1)) & 1;
                     let hash = (hash_it(LASTSTATE, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
@@ -298,21 +299,21 @@ impl UnivMon {
         for i in 0..self.layer {
             self.cs_layers[i].merge(&other.cs_layers[i]);
 
-            let mut topk = TopKHeap::init_heap(self.k as u32);
-            for item in &self.hh_layers[i].heap {
+            let mut topk = HHHeap::new(self.k);
+            for item in self.hh_layers[i].heap() {
                 topk.update(&item.key, item.count);
             }
 
-            for item in &other.hh_layers[i].heap {
+            for item in other.hh_layers[i].heap() {
                 let count = if let Some(index) = topk.find(&item.key) {
-                    topk.heap[index].count + item.count
+                    topk.heap()[index].count + item.count
                 } else {
                     item.count
                 };
                 topk.update(&item.key, count);
             }
 
-            self.hh_layers[i] = TopKHeap::init_heap_from_heap(&topk);
+            self.hh_layers[i] = topk;
         }
     }
 }
@@ -344,9 +345,9 @@ mod tests {
             .find(key)
             .expect("heavy hitter should track key");
         assert!(
-            um.hh_layers[0].heap[idx].count >= 20,
+            um.hh_layers[0].heap()[idx].count >= 20,
             "expected significant count for heavy hitter, got {}",
-            um.hh_layers[0].heap[idx].count
+            um.hh_layers[0].heap()[idx].count
         );
         assert!(um.calc_l1() > 0.0);
         assert!(um.calc_card() >= 1.0);
@@ -377,7 +378,7 @@ mod tests {
         let idx_right = left.hh_layers[0]
             .find(key_right)
             .expect("right key present");
-        assert!(left.hh_layers[0].heap[idx_left].count > 0);
-        assert!(left.hh_layers[0].heap[idx_right].count > 0);
+        assert!(left.hh_layers[0].heap()[idx_left].count > 0);
+        assert!(left.hh_layers[0].heap()[idx_right].count > 0);
     }
 }
