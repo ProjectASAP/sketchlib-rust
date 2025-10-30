@@ -18,8 +18,6 @@ pub enum Chapter<'a> {
     // UNIVMON(UnivMon),
 }
 
-
-
 // impl L2HH {
 //     /// Creates a count-based L2 heavy hitter sketch with the requested dimensions.
 //     pub fn count_with_dimensions(rows: usize, cols: usize) -> Self {
@@ -98,7 +96,7 @@ impl<'a> Chapter<'a> {
         match self {
             Chapter::CM(sketch) => sketch.insert_cm(val),
             Chapter::COCO(sketch) => sketch.insert(val, 1),
-            Chapter::CU(sketch) => sketch.insert_once(val),
+            Chapter::CU(sketch) => sketch.fast_insert_with_count(val, 1),
             Chapter::ELASTIC(sketch) => match val {
                 SketchInput::String(s) => sketch.insert(s.to_string()),
                 SketchInput::I32(i) => sketch.insert(i.to_string()),
@@ -125,22 +123,21 @@ impl<'a> Chapter<'a> {
             Chapter::KLL(sketch) => sketch.update(iv_to_f64(val)),
             Chapter::UNIFORM(sketch) => {
                 let _ = sketch.update_input(val);
-            }
-            // Chapter::LOCHER(sketch) => {
-            //     // Locher requires a String
-            //     if let SketchInput::String(s) = val {
-            //         sketch.insert(s, 1);
-            //     }
-            // }
-            // Chapter::UNIVMON(sketch) => {
-            //     // UnivMon requires update with key, value, bottom_layer_num
-            //     // Using default bottom_layer_num of 0
-            //     if let SketchInput::Str(s) = val {
-            //         sketch.update(s, 1, 0);
-            //     } else if let SketchInput::String(s) = val {
-            //         sketch.update(s.as_str(), 1, 0);
-            //     }
-            // }
+            } // Chapter::LOCHER(sketch) => {
+              //     // Locher requires a String
+              //     if let SketchInput::String(s) = val {
+              //         sketch.insert(s, 1);
+              //     }
+              // }
+              // Chapter::UNIVMON(sketch) => {
+              //     // UnivMon requires update with key, value, bottom_layer_num
+              //     // Using default bottom_layer_num of 0
+              //     if let SketchInput::Str(s) = val {
+              //         sketch.update(s, 1, 0);
+              //     } else if let SketchInput::String(s) = val {
+              //         sketch.update(s.as_str(), 1, 0);
+              //     }
+              // }
         }
     }
 
@@ -188,7 +185,7 @@ impl<'a> Chapter<'a> {
         match (self, key) {
             (Chapter::CM(count_min), _) => Ok(count_min.get_est(key) as f64),
             (Chapter::COCO(coco), _) => Ok(coco.clone().estimate(key.clone()) as f64),
-            (Chapter::CU(count_univ), _) => Ok(count_univ.get_est(key) as f64),
+            (Chapter::CU(count_univ), _) => Ok(count_univ.fast_get_est(key) as f64),
             (Chapter::ELASTIC(elastic), SketchInput::String(s)) => {
                 Ok(elastic.clone().query(s.clone()) as f64)
             }

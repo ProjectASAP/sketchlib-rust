@@ -35,15 +35,4 @@ pub use microscope::MicroScope;
 pub mod uniform;
 pub use uniform::UniformSampling;
 
-
 pub mod utils;
-// pub use utils::SEED;
-// pub use utils::STATELIST;
-// pub use utils::{STATE1, STATE2, STATE3, STATE4, STATE5};
-
-pub mod structured;
-// pub use structured::Count as StructuredCount;
-// pub use structured::CountMin as StructuredCountMin;
-// pub use structured::HyperLogLog;
-// pub use structured::VectorCount;
-// pub use structured::VectorCountMin;

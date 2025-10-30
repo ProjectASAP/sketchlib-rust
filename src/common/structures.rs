@@ -1,3 +1,9 @@
+//! Common data structure that is served as basic building block
+//! Vector1D:
+//! Vector2D:
+//! Vector3D:
+//! CommonHeap:
+
 use std::ops::{Index, IndexMut};
 
 use serde::{Deserialize, Serialize};
@@ -490,7 +496,6 @@ impl<T: Ord> CommonHeapOrder<T> for CommonMaxHeap {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommonHeap<T, O: CommonHeapOrder<T>> {
     data: Vec<T>,
@@ -716,8 +721,7 @@ mod heap_tests {
 
     #[test]
     fn test_min_heap_basic() {
-        let mut heap = 
-        CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
         heap.push(5);
         heap.push(3);
         heap.push(7);
@@ -749,8 +753,7 @@ mod heap_tests {
 
     #[test]
     fn test_bounded_heap_capacity() {
-        let mut heap = 
-        CommonHeap::<i32, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(3);
 
         heap.push(5);
         heap.push(3);
@@ -776,8 +779,7 @@ mod heap_tests {
 
     #[test]
     fn test_update_at() {
-        let mut heap = 
-        CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
         heap.push(10);
         heap.push(20);
         heap.push(5);
@@ -791,8 +793,7 @@ mod heap_tests {
 
     #[test]
     fn test_custom_struct_with_ord() {
-        let mut heap = 
-        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
         heap.push(HHItem::new("five".to_string(), 5));
         heap.push(HHItem::new("three".to_string(), 3));
         heap.push(HHItem::new("seven".to_string(), 7));
@@ -806,8 +807,7 @@ mod heap_tests {
         // Use min-heap so smallest is at root and can be evicted
 
         // Create a min-heap with capacity 3 to keep top-3 items
-        let mut heap = 
-        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
 
         // Insert items (simulating TopKHeap behavior)
         for i in 1..=5 {
@@ -881,24 +881,23 @@ mod heap_tests {
         // This test demonstrates EXACT TopKHeap behavior using generic Heap
 
         // TopKHeap::init_heap(3) equivalent:
-        let mut heap = 
-        CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
 
         // TopKHeap::update("key-1", 1) equivalent:
-        let find_and_update = 
-        |heap: &mut CommonHeap<HHItem, CommonMinHeap>, key: &str, count: i64| {
-            // TopKHeap::find() equivalent:
-            let idx_opt = heap.iter().position(|item| item.key == key);
+        let find_and_update =
+            |heap: &mut CommonHeap<HHItem, CommonMinHeap>, key: &str, count: i64| {
+                // TopKHeap::find() equivalent:
+                let idx_opt = heap.iter().position(|item| item.key == key);
 
-            if let Some(idx) = idx_opt {
-                // Found: update count
-                heap[idx].count = count;
-                heap.update_at(idx);
-            } else {
-                // Not found: insert (TopKHeap::insert equivalent)
-                heap.push(HHItem::new(key.to_string(), count));
-            }
-        };
+                if let Some(idx) = idx_opt {
+                    // Found: update count
+                    heap[idx].count = count;
+                    heap.update_at(idx);
+                } else {
+                    // Not found: insert (TopKHeap::insert equivalent)
+                    heap.push(HHItem::new(key.to_string(), count));
+                }
+            };
 
         // Replicate the exact test from TopKHeap
         for i in 1..=5 {

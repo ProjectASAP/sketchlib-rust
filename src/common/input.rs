@@ -38,13 +38,13 @@ pub enum L2HH {
 impl L2HH {
     pub fn update_and_est(&mut self, key: &SketchInput, value: i64) -> f64 {
         match self {
-            L2HH::COUNT(count_l2hh) => count_l2hh.update_and_est(key, value),
+            L2HH::COUNT(count_l2hh) => count_l2hh.fast_update_and_est(key, value),
         }
     }
 
     pub fn update_and_est_without_l2(&mut self, key: &SketchInput, value: i64) -> f64 {
         match self {
-            L2HH::COUNT(count_l2hh) => count_l2hh.update_and_est_without_l2(key, value),
+            L2HH::COUNT(count_l2hh) => count_l2hh.fast_update_and_est_without_l2(key, value),
         }
     }
 

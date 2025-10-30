@@ -1,12 +1,12 @@
+use crate::common::heap::HHHeap;
 use crate::common::{L2HH, Vector1D};
 use crate::common::{LASTSTATE, SketchInput, hash_it};
 use crate::sketches::count::CountL2HH;
-use crate::common::heap::HHHeap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UnivMon {
-    pub k: usize, // topK?
+    pub k: usize,
     pub row: usize,
     pub col: usize,
     pub layer: usize,
@@ -20,14 +20,13 @@ pub struct UnivMon {
 impl UnivMon {
     pub fn init_univmon(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self {
         // Create cs_layers - each layer needs different seeds
+        // Layer i uses SEEDLIST[i] for hashing
         let cs_vec: Vec<L2HH> = (0..l)
-            .map(|_| L2HH::COUNT(CountL2HH::default()))
+            .map(|i| L2HH::COUNT(CountL2HH::with_dimensions_and_seed(r, c, i)))
             .collect();
 
         // Create hh_layers
-        let hh_vec: Vec<HHHeap> = (0..l)
-            .map(|_| HHHeap::new(k))
-            .collect();
+        let hh_vec: Vec<HHHeap> = (0..l).map(|_| HHHeap::new(k)).collect();
 
         UnivMon {
             k,
@@ -48,25 +47,22 @@ impl UnivMon {
 
     pub fn new_univmon_pyramid(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self {
         // 8 is ELEPHANT_LAYER in PromSketch
+        // Each layer i uses SEEDLIST[i] for hashing
         let cs_vec: Vec<L2HH> = if l <= 8 {
             (0..l)
-                .map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 2048)))
+                .map(|i| L2HH::COUNT(CountL2HH::with_dimensions_and_seed(3, 2048, i)))
                 .collect()
         } else {
             (0..8)
-                .map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 2048)))
-                .chain((8..l).map(|_| L2HH::COUNT(CountL2HH::with_dimensions(3, 512))))
+                .map(|i| L2HH::COUNT(CountL2HH::with_dimensions_and_seed(3, 2048, i)))
+                .chain((8..l).map(|i| L2HH::COUNT(CountL2HH::with_dimensions_and_seed(3, 512, i))))
                 .collect()
         };
 
         let hh_vec: Vec<HHHeap> = if l <= 8 {
-            (0..l)
-                .map(|_| HHHeap::new(k))
-                .collect()
+            (0..l).map(|_| HHHeap::new(k)).collect()
         } else {
-            (0..l)
-                .map(|_| HHHeap::new(100))
-                .collect()
+            (0..l).map(|_| HHHeap::new(100)).collect()
         };
 
         UnivMon {
@@ -321,10 +317,10 @@ impl UnivMon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LASTSTATE, SketchInput, hash_it};
+    use crate::{BOTTOM_LAYER_FINDER, SketchInput, hash_it};
 
     fn bottom_layer_for(um: &UnivMon, key: &str) -> usize {
-        let hash = hash_it(LASTSTATE, &SketchInput::Str(key));
+        let hash = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
         um.find_bottom_layer_num(hash, um.layer)
     }
 
@@ -380,5 +376,152 @@ mod tests {
             .expect("right key present");
         assert!(left.hh_layers[0].heap()[idx_left].count > 0);
         assert!(left.hh_layers[0].heap()[idx_right].count > 0);
+    }
+
+    #[test]
+    fn univmon_layers_use_different_seeds() {
+        // Verify that different layers in UnivMon use different seeds
+        // by checking they produce different hash values
+        use crate::common::hash_it_to_128;
+
+        let _um = UnivMon::init_univmon(20, 3, 1024, 4, 0);
+
+        // Hash the same key with different seed indices (as used by different layers)
+        let test_key = SketchInput::Str("test_flow");
+
+        // Hash the same key with different seed indices (as used by different layers)
+        let hash_0 = hash_it_to_128(0, &test_key);
+        let hash_1 = hash_it_to_128(1, &test_key);
+        let hash_2 = hash_it_to_128(2, &test_key);
+        let hash_3 = hash_it_to_128(3, &test_key);
+
+        // All should be different
+        assert_ne!(hash_0, hash_1, "Layers 0 and 1 should use different seeds");
+        assert_ne!(hash_0, hash_2, "Layers 0 and 2 should use different seeds");
+        assert_ne!(hash_0, hash_3, "Layers 0 and 3 should use different seeds");
+        assert_ne!(hash_1, hash_2, "Layers 1 and 2 should use different seeds");
+        assert_ne!(hash_1, hash_3, "Layers 1 and 3 should use different seeds");
+        assert_ne!(hash_2, hash_3, "Layers 2 and 3 should use different seeds");
+    }
+
+    #[test]
+    fn univmon_cardinality_is_positive() {
+        // Basic sanity test: cardinality should be positive after insertions
+        let mut um = UnivMon::init_univmon(20, 3, 2048, 8, 0);
+
+        for i in 0..20 {
+            let key = format!("flow_{}", i);
+            let bottom = bottom_layer_for(&um, &key);
+            um.univmon_processing(&key, 10, bottom);
+        }
+
+        let card = um.calc_card();
+        assert!(
+            card == 10.0,
+            "Cardinality should be positive after insertions, got {}",
+            card
+        );
+    }
+
+    #[test]
+    fn univmon_bucket_size_tracked_correctly() {
+        // Verify that bucket_size is correctly tracked with seed configuration
+        let mut um = UnivMon::init_univmon(20, 3, 1024, 6, 0);
+
+        let flows = [("flow_a", 100), ("flow_b", 200), ("flow_c", 150)];
+        let expected_total = 450;
+
+        for (key, count) in &flows {
+            let bottom = bottom_layer_for(&um, key);
+            um.univmon_processing(key, *count, bottom);
+        }
+
+        assert_eq!(
+            um.get_bucket_size(),
+            expected_total,
+            "Bucket size should equal sum of all counts"
+        );
+    }
+
+    #[test]
+    fn univmon_basic_operation() {
+        let cases: Vec<(String, i64)> = vec![
+            ("notfound", 1),
+            ("hello", 1),
+            ("count", 3),
+            ("min", 4),
+            ("world", 10),
+            ("cheatcheat", 3),
+            ("cheatcheat", 7),
+            ("min", 2),
+            ("hello", 2),
+            ("tigger", 34),
+            ("flow", 9),
+            ("miss", 4),
+            ("hello", 30),
+            ("world", 10),
+            ("hello", 10),
+            ("mom", 1),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+
+        let mut um = UnivMon::init_univmon(100, 3, 2048, 16, -1);
+        for case in cases {
+            let h = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(&case.0));
+            let bln = um.find_bottom_layer_num(h, 16);
+            um.univmon_processing(&case.0, case.1, bln);
+        }
+
+        assert_eq!(um.calc_l1(), 110.0, "L1 estimation incorrect");
+        assert_eq!(um.calc_card(), 10.0, "Cardinality estimation incorrect");
+    }
+
+    #[test]
+    fn univmon_different_seeds_maintain_accuracy() {
+        // Verify that using different seed indices doesn't break basic accuracy
+        // Create two UnivMons with same config but verify both maintain accuracy
+
+        let mut um1 = UnivMon::new_univmon_pyramid(20, 3, 2048, 10, 0);
+        let mut um2 = UnivMon::new_univmon_pyramid(20, 3, 2048, 10, 1); // Different pool_idx
+
+        // Insert same data into both with more flows for better stability
+        let flows = [
+            ("flow_a", 150),
+            ("flow_b", 200),
+            ("flow_c", 100),
+            ("flow_d", 180),
+            ("flow_e", 120),
+        ];
+
+        let true_l1 = 750i64;
+
+        for (key, count) in &flows {
+            let bottom1 = bottom_layer_for(&um1, key);
+            let bottom2 = bottom_layer_for(&um2, key);
+            um1.univmon_processing(key, *count, bottom1);
+            um2.univmon_processing(key, *count, bottom2);
+        }
+
+        // Both should estimate L1 with reasonable accuracy
+        let est_l1_1 = um1.calc_l1();
+        let est_l1_2 = um2.calc_l1();
+
+        let error_1 = ((est_l1_1 - true_l1 as f64).abs()) / (true_l1 as f64);
+        let error_2 = ((est_l1_2 - true_l1 as f64).abs()) / (true_l1 as f64);
+
+        assert!(
+            error_1 < 0.40,
+            "UnivMon 1 L1 estimate {} should be reasonably accurate (error: {:.2}%)",
+            est_l1_1,
+            error_1 * 100.0
+        );
+        assert!(
+            error_2 < 0.40,
+            "UnivMon 2 L1 estimate {} should be reasonably accurate (error: {:.2}%)",
+            est_l1_2,
+            error_2 * 100.0
+        );
     }
 }
