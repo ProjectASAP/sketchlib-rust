@@ -212,14 +212,6 @@ impl Default for CountL2HH {
 }
 
 impl CountL2HH {
-    // pub fn debug(&self) -> () {
-    //     println!("Counters: ");
-    //     for i in 0..self.row {
-    //         println!("row {}: {:?}", i, self.matrix[i]);
-    //     }
-    //     println!("L2: {:?}", self.l2);
-    // }
-
     pub fn with_dimensions(rows: usize, cols: usize) -> Self {
         let mut sk = CountL2HH {
             counts: Vector2D::init(rows, cols),
@@ -261,20 +253,9 @@ impl CountL2HH {
 
         for i in 0..self.row {
             for j in 0..self.col {
-                self.counts.update_one_counter(
-                    i,
-                    j,
-                    |a, b| *a += b,
-                    other.counts.query_one_counter(i, j),
-                );
+                self.counts[i][j] += other.counts[i][j];
             }
-            // Also merge L2 values
-            let other_l2_val = other.l2.as_slice()[i];
-            self.l2.update_one_counter(
-                i,
-                |a, b| a + b,
-                other_l2_val,
-            );
+            self.l2[i] = other.l2[i];
         }
     }
 
@@ -292,13 +273,13 @@ impl CountL2HH {
             let bit = ((hashed >> 127) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
 
-            let old_value = self.counts.query_one_counter(i, idx);
+            let old_value = self.counts[i][idx];
             let new_value = old_value + sign_bit * c;
-            self.counts.update_one_counter(i, idx, |a, _b| *a = new_value, 0);
+            self.counts[i][idx] = new_value;
 
-            let old_l2 = self.l2.as_slice()[i];
+            let old_l2 = self.l2[i];
             let new_l2 = old_l2 + new_value * new_value - old_value * old_value;
-            self.l2.update_one_counter(i, |_a, b| b, new_l2);
+            self.l2[i] = new_l2;
         }
     }
 
@@ -323,11 +304,11 @@ impl CountL2HH {
 
             let old_value = self.counts.query_one_counter(i, idx);
             let new_value = old_value + sign_bit * c;
-            self.counts.update_one_counter(i, idx, |a, _b| *a = new_value, 0);
+            self.counts[i][idx] = new_value;
 
             let old_l2 = self.l2.as_slice()[i];
             let new_l2 = old_l2 + new_value * new_value - old_value * old_value;
-            self.l2.update_one_counter(i, |_a, b| b, new_l2);
+            self.l2[i] = new_l2;
 
             shift_amount += mask_bits;
             sign_bit_pos -= 1;
@@ -341,7 +322,7 @@ impl CountL2HH {
             let bit = ((hashed >> 127) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
 
-            self.counts.update_one_counter(i, idx, |a, b| *a += sign_bit * b, c);
+            self.counts[i][idx] += sign_bit * c;
         }
     }
 
@@ -364,7 +345,7 @@ impl CountL2HH {
             let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
 
-            self.counts.update_one_counter(i, idx, |a, b| *a += sign_bit * b, c);
+            self.counts[i][idx] += sign_bit*c;
 
             shift_amount += mask_bits;
             sign_bit_pos -= 1;
@@ -416,24 +397,6 @@ impl CountL2HH {
     }
 
     pub fn get_l2(&self) -> f64 {
-        // let mut lst = Vec::new();
-        // for i in 0..self.row {
-        //     lst.push(self.l2[i]);
-        // }
-        // lst.sort();
-        // // get median
-        // let l2;
-        // if self.row == 1 {
-        //     l2 = lst[0] as f64;
-        // } else if self.row == 2 {
-        //     l2 = (lst[0] + lst[1]) as f64 / 2.0;
-        // } else if self.row == 3 {
-        //     l2 = lst[1] as f64;
-        // } else if self.row % 2 == 0 {
-        //     l2 =  (lst[self.row/2] + lst[(self.row/2) - 1]) as f64 / 2.0;
-        // } else {
-        //     l2 = lst[self.row / 2] as f64;
-        // }
         let l2 = self.get_l2_sqr();
         return l2.sqrt();
     }
