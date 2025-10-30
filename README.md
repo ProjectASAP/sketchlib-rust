@@ -1,30 +1,34 @@
 # sketchlib-rust
 
-`sketchlib-rust` is a sketch library for native rust sketch. This repo contains mainly three parts:
+`sketchlib-rust` is a sketch library for native rust sketch, with potential optimization. This repo contains mainly these parts:
 
-- Basic building blocks: located in `/src/common`, contains common structure to build sketches and other common utilities
-- Native Sketch: located in `/src/sketches`, contains rust sketches, migration from hard coded sketch into common structure based sketches
-  - Completed Migration: CountMin, HyperLogLog
-- Sketch Framework: located in `/src/sketch_framework`, contains sketch serving strategies
-
-## Highlights
-
-- Rich sketch collection covering Count-Min, Count/CountUniv, Coco, Elastic, HyperLogLog variants, KLL, Locher, Microscope, and UnivMon implementations.
-- Hydra coordinator builds multi-dimensional label combinations so the same data supports queries over arbitrary label subsets.
-- Chapter enum normalizes insert, merge, and query flows across sketches for composable pipelines.
-- Exponential Histogram wrapper maintains time-bounded aggregates without duplicating sketch state.
-- MessagePack + hex serialization bridges the Rust sketches with PromSketch, Go clients, and optional Arroyo UDFs.
+- **Building blocks**: located in `/src/common`, contains common structure to build sketches and other common utilities
+  - More detail about building block can be found in: [common api](./docs/common_api.md)
+- **Native Sketch**: located in `/src/sketches`, contains rust sketches, migration from hard coded sketch into common structure based sketches
+  - Completed Migration: CountMin, HyperLogLog, Count
+- **Sketch Framework**: located in `/src/sketch_framework`, contains sketch serving strategies
+  - Complete Migration: Hydra, UnivMon
+- **Optimization**: integrated into sketches implementation
+  - More detail about optimization techniques/features can be found in: [features](./docs/features.md)
+  - Benchmark related information can be found in: [benchmark](./docs/benchmark.md)
 
 ## API Overview
 
+There are three sections in the API overview section:
+
+- Built-in `enum` for various purpose is introduced first
+- Core sketches and sketch frameworks are introduced with their example usage
+- Legacy sketches that is not migrated to [common api](./docs/common_api.md) yet.
+
+Only introductory usage is provided here. For full API list, please check [sketch api](./docs/sketch_api.md).
 
 ### Provided Enum
 
-There are some bbuilt-in enum to make it easier to use the sketch.
+There are some built-in enum to make it easier to use the sketch.
 
-#### `SketchInput`
+#### SketchInput
 
-`SketchInput` is a unified enum wrapper that serves as the common entry point for data flowing into every sketch implementation. It supports multiple primitive types and formats, eliminating the need for per-sketch type conversions.
+`SketchInput` is a enum that wraps around various input type. It supports multiple primitive types and formats, eliminating the need for per-sketch type conversions / type-specific insertion function.
 
 **Signed Integers:**
 
@@ -54,8 +58,6 @@ let str_key = SketchInput::Str("user_id");
 let string_key = SketchInput::String("event_name".to_string());
 let float_key = SketchInput::F64(3.14159);
 ```
-
-### Supporting Types
 
 #### L2HH
 
@@ -317,6 +319,8 @@ hll1.merge(&hll2);
 let total_distinct = hll1.get_est();
 println!("merged cardinality: {}", total_distinct);
 ```
+
+### Sketch Frameworks
 
 #### UnivMon
 
@@ -656,23 +660,9 @@ At this moment, ```cargo test``` is a good starting point.
 
 To build new sketch with the Common API, check [this](./docs/common_api.md)
 
-## Optimization
-
 ### Single Hash Reuse
 
 For a `CountMinSketch` with 3 rows and 4096 columns, the minimun size requirement of hash value is: `3*log(4096)=36` bits. One large hash value (i.e., 64 bits) is sufficient to insert the whole sketch, making hashing for each row unnecessary. This suggests an optimization that if the hash value is large enough, hash each key once is sufficient to insert the whole sketch.
-
-## Benchmark
-
-Benchmark located in `/benches`, with the help of rust benchmark support.
-
-### To Run
-
-To run the benchmark for `CountMinSketch` to check the optimization techniques applied to `insert()` and `estimate()`:
-
-```bash
-cargo bench --bench countmin
-```
 
 ## Development
 
@@ -681,14 +671,14 @@ cargo bench --bench countmin
 <!-- - Run targeted binaries such as `cargo run --bin cm_test` when iterating on a specific sketch. -->
 <!-- - Regenerate serialized fixtures via the serializer binaries whenever sketch layouts change. -->
 
-## Status & Next Steps
+<!-- ## Status & Next Steps
 
 - Early-stage code: APIs may change, and several sketches are still being tuned for accuracy.
 - Some components (for example Elastic merges or Hydra's public update surface) remain works in progress.
-<!-- - Cross-language support currently targets PromSketch and Go; extend the deserializers if new consumers appear. -->
+- Cross-language support currently targets PromSketch and Go; extend the deserializers if new consumers appear.
 - Contributions and experiment results are welcome—open an issue describing the workload or sketch you plan to add.
 - Missing many testing
-- Missing many serialization and deserialization support
+- Missing many serialization and deserialization support -->
 
 ## Future Update TimeLine
 
