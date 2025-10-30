@@ -25,70 +25,276 @@
 - Text keys: borrowed `Str` and owned `String`
 - Binary payloads: `Bytes`
 
-### Standalone sketches
+### Core Sketches
 
-Every sketch exposes a consistent lifecycle: construct the sketch, insert data, derive an estimate, and optionally merge state from a peer sketch. The example below uses Count-Min to illustrate the pattern.
+This section documents the primary sketch implementations with their initialization, insertion, query, and merge APIs.
 
-Create two sketches with matching dimensions.
+#### Count-Min Sketch (CMS)
+
+Count-Min Sketch tracks approximate frequencies for keys using a 2D array of counters. It provides probabilistic guarantees on overestimation.
+
+Initialize with default dimensions (3 rows × 4096 columns):
 
 ```rust
-use sketchlib_rust::{CountMin, SketchInput};
+use sketchlib_rust::CountMin;
 
-let mut primary = CountMin::init_cm_with_row_col(3, 64);
-let mut peer = CountMin::init_cm_with_row_col(3, 64);
-let key = SketchInput::String("error".into());
+let mut cms = CountMin::default();
 ```
 
-Insert updates into both instances.
+Or specify custom dimensions:
 
 ```rust
-primary.insert_cm(&key);
-primary.insert_cm(&key);
-peer.insert_cm(&key);
+let mut cms = CountMin::with_dimensions(4, 2048);
 ```
 
-Merge the peer into the primary sketch.
+Insert keys to track their frequency:
 
 ```rust
-primary.merge(&peer);
+use sketchlib_rust::SketchInput;
+
+let key = SketchInput::String("user_123".into());
+cms.insert(&key);
+cms.insert(&key);
 ```
 
-Estimate the frequency for the tracked key.
+Query the approximate frequency:
 
 ```rust
-let estimate = primary.get_est(&key);
-println!("approximate error count = {}", estimate);
+let estimate = cms.estimate(&key);
+println!("estimated frequency: {}", estimate);
 ```
 
-#### Structured Count-Min (hash reuse)
-
-The structured variant keeps row slices inside a shared 64-bit digest so `fast_insert` and `fast_estimate` perform the hash only once per value.
-
-Create the optimized sketch and key.
+Merge two Count-Min sketches (must have identical dimensions):
 
 ```rust
-use sketchlib_rust::{StructuredCountMin, common::SketchInput};
+let mut cms1 = CountMin::with_dimensions(3, 64);
+let mut cms2 = CountMin::with_dimensions(3, 64);
+let key = SketchInput::Str("event");
 
-let mut sketch = StructuredCountMin::with_dimensions(4, 2048);
-let key = SketchInput::String("warning".into());
+cms1.insert(&key);
+cms2.insert(&key);
+cms2.insert(&key);
+
+cms1.merge(&cms2);
+assert_eq!(cms1.estimate(&key), 3);
 ```
 
-Apply high-throughput updates while reusing the precomputed hash internally.
+#### Count Sketch (CS)
+
+Count Sketch uses signed counters with hash-based sign determination to provide unbiased frequency estimates via median aggregation.
+
+Initialize with default dimensions (3 rows × 4096 columns):
 
 ```rust
-for _ in 0..10_000 {
-    sketch.fast_insert(&key);
+use sketchlib_rust::Count;
+
+let mut cs = Count::default();
+```
+
+Or specify custom dimensions:
+
+```rust
+let mut cs = Count::with_dimensions(5, 8192);
+```
+
+Insert keys to track their frequency:
+
+```rust
+use sketchlib_rust::SketchInput;
+
+let key = SketchInput::String("metric_name".into());
+cs.insert(&key);
+```
+
+Query the approximate frequency (returns median estimate as f64):
+
+```rust
+let estimate = cs.estimate(&key);
+println!("estimated frequency: {}", estimate);
+```
+
+Merge two Count sketches (must have identical dimensions):
+
+```rust
+let mut cs1 = Count::with_dimensions(3, 64);
+let mut cs2 = Count::with_dimensions(3, 64);
+let key = SketchInput::Str("counter");
+
+cs1.insert(&key);
+cs2.insert(&key);
+
+cs1.merge(&cs2);
+let merged_est = cs1.estimate(&key);
+println!("merged estimate: {}", merged_est);
+```
+
+#### HyperLogLog (HLL)
+
+HyperLogLog estimates the cardinality (number of distinct elements) in a stream with high accuracy and low memory footprint. Three variants are available: `HyperLogLog` (classic), `HllDf` (improved estimator), and `HllDs` (streaming estimator, non-mergeable).
+
+Initialize with default configuration (14-bit precision, 16384 registers):
+
+```rust
+use sketchlib_rust::sketches::hll::HllDf;
+
+let mut hll = HllDf::new();
+```
+
+Insert elements to track distinct count:
+
+```rust
+use sketchlib_rust::SketchInput;
+
+for user_id in 0..10_000u64 {
+    hll.insert(&SketchInput::U64(user_id));
 }
 ```
 
-Estimate the frequency with the same single-hash shortcut.
+Query the estimated cardinality:
 
 ```rust
-let approx = sketch.fast_estimate(&key);
-println!("fast estimate ≈ {}", approx);
+let cardinality = hll.get_est();
+println!("approximate distinct count: {}", cardinality);
 ```
 
-Other sketches follow the same shape with their own method names (for example `KLL::update`, `HllDfModified::insert`, `Elastic::insert`). Depending on the sketch, inserts may take a `SketchInput` or a domain-specific value (such as `f64` for quantiles); most provide a `merge` method that rejects mismatched shapes at runtime.
+Merge two HyperLogLog sketches:
+
+```rust
+let mut hll1 = HllDf::new();
+let mut hll2 = HllDf::new();
+
+for i in 0..5_000u64 {
+    hll1.insert(&SketchInput::U64(i));
+}
+for i in 2_500..7_500u64 {
+    hll2.insert(&SketchInput::U64(i));
+}
+
+hll1.merge(&hll2);
+let total_distinct = hll1.get_est();
+println!("merged cardinality: {}", total_distinct);
+```
+
+#### UnivMon
+
+UnivMon provides a multi-layer pyramid structure for computing frequency moments (L1, L2, cardinality, entropy) over streams using Count Sketch layers and heavy-hitter tracking.
+
+Initialize with custom parameters (k=heap size, rows, columns, layers, pool_idx):
+
+```rust
+use sketchlib_rust::sketch_framework::univmon::UnivMon;
+
+let mut univmon = UnivMon::init_univmon(32, 3, 1024, 4, 0);
+```
+
+Insert items with their bottom layer (determined by hash):
+
+```rust
+use sketchlib_rust::{BOTTOM_LAYER_FINDER, SketchInput, hash_it};
+
+let key = "flow::123";
+let input = SketchInput::Str(key);
+let hash = hash_it(BOTTOM_LAYER_FINDER, &input);
+let bottom_layer = univmon.find_bottom_layer_num(hash, univmon.layer);
+
+univmon.update(key, 1, bottom_layer);
+```
+
+Query various statistics:
+
+```rust
+let cardinality = univmon.calc_card();
+let l1_norm = univmon.calc_l1();
+let l2_norm = univmon.calc_l2();
+let entropy = univmon.calc_entropy();
+
+println!("cardinality: {}", cardinality);
+println!("L1: {}, L2: {}", l1_norm, l2_norm);
+println!("entropy: {}", entropy);
+```
+
+Merge two UnivMon sketches (must have identical structure):
+
+```rust
+let mut um1 = UnivMon::init_univmon(32, 3, 1024, 4, 0);
+let mut um2 = UnivMon::init_univmon(32, 3, 1024, 4, 0);
+
+// Insert data into both
+let key1 = "flow_a";
+let input1 = SketchInput::Str(key1);
+let hash1 = hash_it(BOTTOM_LAYER_FINDER, &input1);
+let bottom1 = um1.find_bottom_layer_num(hash1, um1.layer);
+um1.update(key1, 10, bottom1);
+
+let key2 = "flow_b";
+let input2 = SketchInput::Str(key2);
+let hash2 = hash_it(BOTTOM_LAYER_FINDER, &input2);
+let bottom2 = um2.find_bottom_layer_num(hash2, um2.layer);
+um2.update(key2, 15, bottom2);
+
+um1.merge_with(&um2);
+println!("merged L1: {}", um1.calc_l1());
+```
+
+#### Hydra
+
+Hydra coordinates multi-dimensional queries by maintaining sketches for all label combinations. It accepts semicolon-delimited keys and automatically fans updates across subpopulations.
+
+Initialize with sketch template (uses CountMin by default):
+
+```rust
+use sketchlib_rust::Hydra;
+use sketchlib_rust::CountMin;
+use sketchlib_rust::common::input::HydraCounter;
+
+let template = HydraCounter::CM(CountMin::with_dimensions(3, 64));
+let mut hydra = Hydra::with_dimensions(3, 128, template);
+```
+
+Insert with multi-dimensional keys (**semicolon-separated**):
+
+```rust
+use sketchlib_rust::SketchInput;
+
+let value = SketchInput::String("error".into());
+hydra.update("service=api;route=/users;status=500", &value);
+```
+
+Query specific label combinations:
+
+```rust
+// Query 2D combination
+let estimate = hydra.query_frequency(vec!["service=api", "status=500"], &value);
+println!("api + 500 errors: {}", estimate);
+
+// Query single dimension
+let service_total = hydra.query_frequency(vec!["service=api"], &value);
+println!("all api errors: {}", service_total);
+```
+
+Hydra with HyperLogLog for cardinality queries:
+
+```rust
+use sketchlib_rust::HllDf;
+use sketchlib_rust::common::input::{HydraCounter, HydraQuery};
+
+let hll_template = HydraCounter::HLL(HllDf::new());
+let mut hydra = Hydra::with_dimensions(5, 128, hll_template);
+
+// Insert user IDs with labels
+for user_id in 0..1000 {
+    let value = SketchInput::U64(user_id);
+    hydra.update("region=us-west;device=mobile", &value);
+}
+
+// Query distinct users by region
+let cardinality = hydra.query_key(vec!["region=us-west"], &HydraQuery::Cardinality);
+println!("distinct users in us-west: {}", cardinality);
+```
+
+### Additional Sketches
+
+The library includes additional specialized sketches. Each follows a consistent lifecycle: construct, insert, query, and optionally merge.
 
 #### KLL (quantile CDF)
 

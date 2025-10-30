@@ -35,9 +35,19 @@ This note captures the current surface area of the crate and the rough roadmap. 
 
 ## Feature Explanation
 
-### Manually Implemented Hash
+### Custom Hash
 
 Provide native xxhash algorithm
+
+### Custom Random Rng
+
+### One Hash for Different Sketch
+
+Extra layer of hash value.
+
+### SIMD
+
+No idea
 
 ## Future Directions
 
