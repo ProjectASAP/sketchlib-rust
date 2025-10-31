@@ -37,7 +37,7 @@ This note captures the current surface area of the crate and the rough roadmap. 
 
 ### Custom Hash
 
-Provide native xxhash algorithm
+Provide native xxhash algorithm.
 
 ### Custom Random Rng
 
