@@ -67,7 +67,7 @@ impl Count {
     /// Inserts an observation with hash optimization of Count Sketch updating algorithm.
     /// The hash may be reused with other sketches
     pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
-        self.counts.fast_insert_row_dependent(
+        self.counts.fast_insert(
             |counter, value, row| {
                 let sign_bit_pos = 127 - row;
                 let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
@@ -107,31 +107,12 @@ impl Count {
     /// Inferred reason is the u128 is expensive
     pub fn fast_estimate(&self, value: &SketchInput) -> f64 {
         let hashed_val = hash_it_to_128(0, value);
-        let mask_bits = self.counts.get_mask_bits() as usize;
-        let mask = (1u128 << mask_bits) - 1;
-        let mut estimates = Vec::with_capacity(self.row);
-        let mut shift_amount = 0;
-        let mut sign_bit_pos = 127;
-        for r in 0..self.row {
-            let hashed = (hashed_val >> shift_amount) & mask;
-            let col = (hashed as usize) % self.col;
-            let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
+        self.counts.fast_query_median(hashed_val, |val, row, hash| {
+            let sign_bit_pos = 127 - row;
+            let bit = ((hash >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
-            let counter = self.counts.query_one_counter(r, col);
-            estimates.push(sign_bit * counter);
-            shift_amount += mask_bits;
-            sign_bit_pos -= 1;
-        }
-        if estimates.is_empty() {
-            return 0.0;
-        }
-        estimates.sort_unstable();
-        let mid = estimates.len() / 2;
-        if estimates.len() % 2 == 1 {
-            estimates[mid] as f64
-        } else {
-            (estimates[mid - 1] as f64 + estimates[mid] as f64) / 2.0
-        }
+            sign_bit as f64 * (*val as f64)
+        })
     }
 
     /// Merges another sketch while asserting compatible dimensions.

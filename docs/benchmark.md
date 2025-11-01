@@ -44,5 +44,6 @@ Notes
 - Count-Min: `cargo bench --bench countmin`
 - Count: `cargo bench --bench count`
 - Hash variants: `cargo bench --bench hash_detailed`
+- all: `cargo bench -- --measurement-time 10`
 
 Results will appear in `target/criterion/` and can be optionally summarized into text files under `benchmark/`.

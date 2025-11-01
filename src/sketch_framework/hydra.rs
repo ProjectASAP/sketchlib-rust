@@ -49,7 +49,7 @@ impl Hydra {
 
         for subkey in &result {
             let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
-            self.sketches.fast_insert(|a, b| a.insert(b), value, hash);
+            self.sketches.fast_insert(|a, b, _| a.insert(b), value, hash);
         }
     }
 
@@ -67,8 +67,8 @@ impl Hydra {
         let hashed_val = hash_it_to_128(HYDRA_SEED, &SketchInput::String(key_string.to_string()));
         self.sketches.fast_query_median_with_key(
             hashed_val,
-            |counter, q| counter.query(q).unwrap(),
             query,
+            |counter, q, _, _| counter.query(q).unwrap(),
         )
     }
 
