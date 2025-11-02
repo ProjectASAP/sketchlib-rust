@@ -115,10 +115,10 @@ impl HydraCounter {
     /// // For KLL, only Quantile queries would be valid
     /// let result = counter.query(&HydraQuery::Quantile(0.5)); // median
     /// ```
-    pub fn query(&self, query: &HydraQuery) -> Result<f64, String> {
+    pub fn query(&self, query: &HydraQuery) -> Result<i64, String> {
         match (self, query) {
             (HydraCounter::CM(cm), HydraQuery::Frequency(value)) => {
-                Ok(cm.fast_estimate(value) as f64)
+                Ok(cm.fast_estimate(value) as i64)
             }
             (HydraCounter::CM(_), HydraQuery::Quantile(_)) => {
                 Err("CountMin does not support quantile queries. Use a quantile sketch like KLL instead.".to_string())
@@ -133,7 +133,7 @@ impl HydraCounter {
                 Err("HyperLogLog does not support quantile queries. Use a quantile sketch like KLL instead.".to_string())
             },
             (HydraCounter::HLL(hll_df), HydraQuery::Cardinality) => {
-                Ok(hll_df.get_est() as f64)
+                Ok(hll_df.get_est() as i64)
             },
         }
     }

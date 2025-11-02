@@ -418,7 +418,7 @@ impl<T> Vector2D<T> {
     #[inline(always)]
     pub fn fast_query_median<F>(&self, hashed_val: u128, op: F) -> f64
     where
-        F: Fn(&T, usize, u128) -> f64,
+        F: Fn(&T, usize, u128) -> i64,
     {
         let mask_bits = self.mask_bits;
         let mask = self.mask;
@@ -562,7 +562,7 @@ impl<T> Vector2D<T> {
     #[inline(always)]
     pub fn fast_query_median_with_key<F, Q>(&self, hashed_val: u128, query_key: &Q, op: F) -> f64
     where
-        F: Fn(&T, &Q, usize, u128) -> f64,
+        F: Fn(&T, &Q, usize, u128) -> i64,
     {
         let mask_bits = self.mask_bits;
         let mask = self.mask;
@@ -580,16 +580,16 @@ impl<T> Vector2D<T> {
     /// Compute median from a mutable slice of f64 values (inline helper)
     /// This is used by query_median_with_custom_hash for HydraCounter queries
     #[inline(always)]
-    fn compute_median_inline_f64(&self, values: &mut [f64]) -> f64 {
+    fn compute_median_inline_f64(&self, values: &mut [i64]) -> f64 {
         if values.is_empty() {
             return 0.0;
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        values.sort_unstable();
         let mid = values.len() / 2;
         if values.len() % 2 == 1 {
-            values[mid]
+            values[mid] as f64
         } else {
-            (values[mid - 1] + values[mid]) / 2.0
+            (values[mid - 1] + values[mid]) as f64 / 2.0
         }
     }
 

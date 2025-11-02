@@ -5,7 +5,7 @@ This document summarizes the current Criterion benchmarks in `benches/` and the 
 ## Bench Suite
 
 - Count-Min (`benches/countmin.rs`) — compares `insert_only` vs `fast_insert_only`, and `estimate` vs `fast_estimate` on the same workload.
-- Count (`benches/count.rs`) — same comparisons as above, using explicit dimensions (`rows=5`, `cols=32768`).
+- Count (`benches/count.rs`) — same comparisons as above, using explicit dimensions (`rows=5`, `cols=4096`).
 - Hash variants (`benches/hash_detailed.rs`) — micro-benchmarks for `xxhash32`, `xxhash64`, `xxhash3_64`, and `xxhash3_128` against fixed-size payloads. (No checked-in results yet.)
 
 ## Setup & Methodology
@@ -22,30 +22,30 @@ All numbers below use the middle value of Criterion's reported time range.
 
 Count-Min (`benchmark/countmin_benchmark.txt`)
 
-- insert_only: ~181.64 µs
-- fast_insert_only: ~109.55 µs (≈40% faster)
-- estimate: ~186.66 µs
-- fast_estimate: ~100.90 µs (≈46% faster)
+- insert_only: ~181.49 µs
+- fast_insert_only: ~109.62 µs (≈40% faster)
+- estimate: ~185.96 µs
+- fast_estimate: ~100.71 µs (≈46% faster)
 
 Count (`benchmark/count_benchmark.txt`)
 
-- insert_only: ~309.22 µs
-- fast_insert_only: ~207.27 µs (≈33% faster)
-- estimate: ~1.0895 ms
-- fast_estimate: ~994.94 µs (≈9% faster)
+- insert_only: ~308.98 µs
+- fast_insert_only: ~203.56 µs (≈34% faster)
+- estimate: ~1.0922 ms
+- fast_estimate: ~955.59 µs (≈12.5% faster)
 
 Hash Variants (`benchmark/hash_detailed_benchmark.txt`)
 
-- xxhash32/64: ~10.822 µs
-- xxhash64/64: ~20.815 µs
-- xxhash3_64/64: ~8.3618 µs (fastest)
-- xxhash3_128/64: ~11.804 µs
+- xxhash32/64: ~10.831 µs
+- xxhash64/64: ~20.868 µs
+- xxhash3_64/64: ~8.4750 µs (fastest)
+- xxhash3_128/64: ~12.307 µs
 
 Notes
 
 - Criterion may flag regressions/noise relative to prior runs; the numbers above compare fast vs. non-fast paths within the same run.
 - Outliers are present in some groups but do not change the relative ordering.
-- Count sketch performance improvement: `fast_estimate` is now ~9% faster (previously showed regression due to f64 sorting overhead, fixed by using i64 sorting).
+- Count sketch performance improvement: `fast_estimate` is now ~12.5% faster (previously showed regression due to f64 sorting overhead, fixed by using i64 sorting).
 
 ## How To Run
 
