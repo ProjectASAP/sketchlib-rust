@@ -58,6 +58,16 @@ impl AnySketch {
         }
     }
 
+    /// Query using a pre-computed hash value
+    /// Note: For HllDf (cardinality sketch), the hash_value is ignored and total cardinality is returned
+    pub fn query_with_hash(&self, hash_value: u128) -> Result<f64, &'static str> {
+        match self {
+            AnySketch::CountMin(cm) => Ok(cm.fast_estimate_with_hash(hash_value) as f64),
+            AnySketch::Count(cs) => Ok(cs.fast_estimate_with_hash(hash_value)),
+            AnySketch::HllDf(hll_df) => Ok(hll_df.get_est() as f64),
+        }
+    }
+
     /// Get the type of sketch as a string
     pub fn sketch_type(&self) -> &'static str {
         match self {

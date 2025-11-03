@@ -1,5 +1,5 @@
-use crate::{hash_it, hash_it_to_128};
 use crate::{LASTSTATE, SketchInput, Vector1D};
+use crate::{hash_it, hash_it_to_128};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
