@@ -2,7 +2,7 @@
 
 | Feature                      | Status | Expected Date | Comment |
 |------------------------------|--------|---------------| --------|
-|[Hash Layer](features.md#framework-enhancements)|🚧|11.04.2025||
+|[Hash Layer](features.md#framework)|✅|11.04.2025||
 |`cargo clippy --all-targets --all-features`|🚧|11.05.2025|it's rust, so warning should be fixed|
 |Correctness Testing-CM|🚧|11.07.2025||
 |Correctness Testing-CS|🚧|11.07.2025||
