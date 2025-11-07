@@ -120,7 +120,7 @@ impl DDSketch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{sample_uniform_f64, sample_zipf_f64};
+    use crate::test_utils::{sample_uniform_f64, sample_zipf_f64, sample_normal_f64, sample_exponential_f64};
 
     // Absolute relative error helper
     fn rel_err(a: f64, b: f64) -> f64 {
@@ -273,7 +273,7 @@ mod tests {
         }
     }
 
-    #[test]
+   #[test]
     fn dds_normal_distribution_quantiles() {
         const ALPHA: f64 = 0.01;
 
@@ -288,28 +288,11 @@ mod tests {
         ];
 
         fn build_dds_with_normal(alpha: f64, n: usize, mean: f64, std: f64, seed: u64) -> (DDSketch, Vec<f64>) {
-            let eps = 1e-12;
-            let need = ((n + 1) / 2) * 2; // even count
-            let us = sample_uniform_f64(eps, 1.0 - eps, need, seed);
-
-            let mut vals = Vec::with_capacity(n);
-            let mut i = 0;
-            while i < need {
-                let u1 = us[i];
-                let u2 = us[i + 1];
-                let r = (-2.0 * u1.ln()).sqrt();
-                let theta = 2.0 * std::f64::consts::PI * u2;
-                let z0 = r * theta.cos();
-                let z1 = r * theta.sin();
-                vals.push(mean + std * z0);
-                if vals.len() < n {
-                    vals.push(mean + std * z1);
-                }
-                i += 2;
-            }
-
-            // retain only positive finite values
-            let vals = vals.into_iter().filter(|v| v.is_finite() && *v > 0.0).collect::<Vec<_>>();
+            // changed the code to include the normal distribution sampler from test_utils
+            let vals = sample_normal_f64(mean, std, n, seed)
+                .into_iter()
+                .filter(|v| v.is_finite() && *v > 0.0) 
+                .collect::<Vec<_>>();
 
             let mut sk = DDSketch::new(alpha);
             for &x in &vals { sk.add(x); }
@@ -337,7 +320,7 @@ mod tests {
 
         // Mean and std chosen so almost all samples are positive.
         let mean = 1_000.0;
-        let std = 100.0;
+        let std  = 100.0;
 
         for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
             let seed = 0xC0DE_0000_u64 + idx as u64;
@@ -345,4 +328,49 @@ mod tests {
             assert_quantiles_within_error_dds(&sketch, values, QUANTILES, ALPHA);
         }
     }
+
+
+    #[test]
+    fn dds_exponential_distribution_quantiles() {
+        const ALPHA: f64 = 0.01;
+        const LAMBDA: f64 = 1e-3; // mean = 1000.0
+        const QUANTILES: &[(f64, &str)] = &[
+            (0.0, "min"),
+            (0.10, "p10"),
+            (0.25, "p25"),
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (1.0, "max"),
+        ];
+
+        fn build_dds_with_exponential(alpha: f64, n: usize, lambda: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+            let vals = sample_exponential_f64(lambda, n, seed);
+            let mut sk = DDSketch::new(alpha);
+            for &x in &vals { sk.add(x); }
+            (sk, vals)
+        }
+
+        fn assert_quantiles_within_error_dds(sk: &DDSketch, vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+            let mut sorted = vals.to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for &(p, name) in qs {
+                let got = sk.get_value_at_quantile(p).expect("quantile");
+                let want = true_quantile(&sorted, p);
+                let err = rel_err(got, want);
+                assert!(
+                    err <= tol,
+                    "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
+                    name, p, err, got, want, tol
+                );
+            }
+        }
+
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+            let seed = 0xE3E3_0000_u64 + idx as u64;
+            let (sketch, values) = build_dds_with_exponential(ALPHA, n, LAMBDA, seed);
+            assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, ALPHA);
+        }
+    }
+
 }
