@@ -28,8 +28,10 @@ impl DDSketch {
             sum: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
+
         }
     }
+
 
     /// Add a sample.
     pub fn add(&mut self, v: f64) {
@@ -38,24 +40,28 @@ impl DDSketch {
         }
         self.count += 1;
         self.sum += v;
-        if v < self.min { 
-            self.min = v; 
+        if v < self.min {
+            self.min = v;
         }
-        if v > self.max { 
-            self.max = v; 
+        if v > self.max {
+            self.max = v;
         }
         let idx = self.key_for(v);
         *self.store.entry(idx).or_insert(0) += 1;
     }
 
+
+
     /// Quantile estimate using bin representative based on logarithmic binning.
     pub fn get_value_at_quantile(&self, q: f64) -> Option<f64> {
-        if self.count == 0 || q.is_nan() { return None; }
-        if q <= 0.0 { 
-            return Some(self.min); 
+        if self.count == 0 || q.is_nan() {
+            return None;
+        }
+        if q <= 0.0 {
+            return Some(self.min);
         }
         if q >= 1.0 {
-            return Some(self.max); 
+            return Some(self.max);
         }
 
         let rank = (q * self.count as f64).ceil() as u64;
@@ -64,53 +70,78 @@ impl DDSketch {
         for (bin, c) in self.store.iter() {
             seen += *c;
             if seen >= rank {
-                // Use a representative for the bin
+                // found the bin
                 let mut v = self.bin_representative(*bin);
-                // Clamp to observed bounds
-                if v < self.min { v = self.min; }
-                if v > self.max { v = self.max; }
+                // keep within min/max
+                if v < self.min {
+                    v = self.min;
+                }
+                if v > self.max {
+                    v = self.max;
+                }
                 return Some(v);
             }
         }
         Some(self.max)
     }
 
-    pub fn get_count(&self) -> u64 { self.count }
-    pub fn min(&self) -> Option<f64> { if self.count == 0 { None } else { Some(self.min) } }
-    pub fn max(&self) -> Option<f64> { if self.count == 0 { None } else { Some(self.max) } }
+    pub fn get_count(&self) -> u64 {
+        self.count
+    }
+    pub fn min(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.min)
+        }
+    }
+    pub fn max(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.max)
+        }
+    }
 
-    // mapping value to bin key
+    // mapping value to bin key 
     fn key_for(&self, v: f64) -> i32 {
         debug_assert!(v > 0.0);
         (v.ln() / self.log_gamma).floor() as i32
     }
-    // bounds for the given bin
-    fn bin_bounds(&self, k: i32) -> (f64, f64) {
-        let lo = self.gamma.powf(k as f64) / (1.0 + self.alpha);
-        let hi = self.gamma.powf(k as f64 + 1.0) / (1.0 + self.alpha);
-        (lo, hi)
-    }
-    // Bin representative value 
+
+    
+
+    // mapping bin key to representative value
     fn bin_representative(&self, k: i32) -> f64 {
-        let (lo, hi) = self.bin_bounds(k);
-        (lo * hi).sqrt()
+        self.gamma.powf(k as f64 + 0.5)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{sample_uniform_f64, sample_zipf_f64};
 
     // Absolute relative error helper
     fn rel_err(a: f64, b: f64) -> f64 {
-        if a == 0.0 && b == 0.0 { 0.0 } else { (a - b).abs() / f64::max(1e-30, b.abs()) }
+        if a == 0.0 && b == 0.0 {
+            0.0
+        } else {
+            (a - b).abs() / f64::max(1e-30, b.abs())
+        }
     }
 
     // True quantile from sorted data
     fn true_quantile(sorted: &[f64], p: f64) -> f64 {
-        if sorted.is_empty() { return f64::NAN; }
-        if p <= 0.0 { return sorted[0]; }
-        if p >= 1.0 { return sorted[sorted.len() - 1]; }
+        if sorted.is_empty() {
+            return f64::NAN;
+        }
+        if p <= 0.0 {
+            return sorted[0];
+        }
+        if p >= 1.0 {
+            return sorted[sorted.len() - 1];
+        }
         let n = sorted.len();
         let k = ((p * n as f64).ceil() as usize).clamp(1, n) - 1;
         sorted[k]
@@ -120,7 +151,9 @@ mod tests {
     fn insert_and_query_basic() {
         let mut s = DDSketch::new(0.01);
         let vals = [0.0, -5.0, 1.0, 2.0, 3.0, 10.0, 50.0, 100.0, 1000.0];
-        for &v in &vals { s.add(v); }
+        for &v in &vals {
+            s.add(v);
+        }
 
         // Non-positives ignored
         assert_eq!(s.get_count(), 7);
@@ -144,32 +177,172 @@ mod tests {
         assert!(s.get_value_at_quantile(1.0).is_none());
         assert_eq!(s.get_count(), 0);
     }
+    
 
     #[test]
-    fn accuracy_uniform() {
-        let alpha = 0.01;
-        let tol = 3.0 * alpha;
-        let n = 20_000usize;
+    fn dds_uniform_distribution_quantiles() {
+        // choose alpha as 1%
+        const ALPHA: f64 = 0.01;
 
-        // Deterministic uniform data between 1 and 1000
-        let xs: Vec<f64> = (0..n)
-            .map(|i| 1.0 + i as f64 * (999.0 / (n - 1) as f64))
-            .collect();
+        const QUANTILES: &[(f64, &str)] = &[
+            (0.0,  "min"),
+            (0.10, "p10"),
+            (0.25, "p25"),
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (1.0,  "max"),
+        ];
 
-        let mut s = DDSketch::new(alpha);
-        for &v in &xs { s.add(v); }
+        fn build_dds_with_uniform(alpha: f64, n: usize, min: f64, max: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+            // sample uniform values from test utils
+            let mut vals = sample_uniform_f64(min, max, n, seed);
+            // retain only finite positive values
+            vals.retain(|v| v.is_finite() && *v > 0.0);
+            // build DDSketch
+            let mut sk = DDSketch::new(alpha);
+            for &x in &vals { sk.add(x); }
+            (sk, vals)
+        }
 
-        let mut cp = xs.clone();
-        cp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        fn assert_quantiles_within_error_dds(sk: &DDSketch, sorted_vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+            for &(p, name) in qs {
+                let got = sk.get_value_at_quantile(p).expect("quantile");
+                let want = true_quantile(sorted_vals, p);
+                let err = rel_err(got, want);
+                assert!(
+                    err <= tol,
+                    "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
+                    name, p, err, got, want, tol
+                );
+            }
+        }
 
-        for &p in &[0.5, 0.9, 0.99] {
-            let got = s.get_value_at_quantile(p).expect("quantile");
-            let want = true_quantile(&cp, p);
-            let re = rel_err(got, want);
-            assert!(
-                re <= tol,
-                "p={p:.2} relerr={re:.4} got={got:.6} want={want:.6} (tol={tol:.4})"
-            );
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+            let seed = 0xA5A5_0000_u64 + idx as u64;
+            let (sketch, mut values) = build_dds_with_uniform(ALPHA, n, 1_000_000.0, 10_000_000.0, seed);
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, ALPHA);
+        }
+    }
+
+    #[test]
+    fn dds_zipf_distribution_quantiles() {
+
+        const ALPHA: f64 = 0.01;
+
+        const QUANTILES: &[(f64, &str)] = &[
+            (0.0,  "min"),
+            (0.10, "p10"),
+            (0.25, "p25"),
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (1.0,  "max"),
+        ];
+
+        fn build_dds_with_zipf(alpha: f64, n: usize, min: f64, max: f64, domain: usize, exponent: f64, seed: u64,) -> (DDSketch, Vec<f64>) {
+            let mut vals = sample_zipf_f64(min, max, domain, exponent, n, seed);
+            vals.retain(|v| v.is_finite() && *v > 0.0);
+            let mut sk = DDSketch::new(alpha);
+            for &x in &vals {
+                sk.add(x);
+            }
+            (sk, vals)
+        }
+
+        fn assert_quantiles_within_error_dds(sk: &DDSketch, sorted_vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+            for &(p, name) in qs {
+                let got = sk.get_value_at_quantile(p).expect("quantile");
+                let want = true_quantile(sorted_vals, p);
+                let err = rel_err(got, want);
+                assert!(
+                    err <= tol,
+                    "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
+                    name, p, err, got, want, tol
+                );
+            }
+        }
+
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+            let seed = 0xB4B4_0000_u64 + idx as u64;
+            let (sketch, mut values) =
+                build_dds_with_zipf(ALPHA, n, 1_000_000.0, 10_000_000.0, 8_192, 1.1, seed);
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, ALPHA);
+        }
+    }
+
+    #[test]
+    fn dds_normal_distribution_quantiles() {
+        const ALPHA: f64 = 0.01;
+
+        const QUANTILES: &[(f64, &str)] = &[
+            (0.0,  "min"),
+            (0.10, "p10"),
+            (0.25, "p25"),
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (1.0,  "max"),
+        ];
+
+        fn build_dds_with_normal(alpha: f64, n: usize, mean: f64, std: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+            let eps = 1e-12;
+            let need = ((n + 1) / 2) * 2; // even count
+            let us = sample_uniform_f64(eps, 1.0 - eps, need, seed);
+
+            let mut vals = Vec::with_capacity(n);
+            let mut i = 0;
+            while i < need {
+                let u1 = us[i];
+                let u2 = us[i + 1];
+                let r = (-2.0 * u1.ln()).sqrt();
+                let theta = 2.0 * std::f64::consts::PI * u2;
+                let z0 = r * theta.cos();
+                let z1 = r * theta.sin();
+                vals.push(mean + std * z0);
+                if vals.len() < n {
+                    vals.push(mean + std * z1);
+                }
+                i += 2;
+            }
+
+            // retain only positive finite values
+            let vals = vals.into_iter().filter(|v| v.is_finite() && *v > 0.0).collect::<Vec<_>>();
+
+            let mut sk = DDSketch::new(alpha);
+            for &x in &vals { sk.add(x); }
+            (sk, vals)
+        }
+
+        fn assert_quantiles_within_error_dds(
+            sk: &DDSketch,
+            mut vals: Vec<f64>,
+            qs: &[(f64, &str)],
+            tol: f64,
+        ) {
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for &(p, name) in qs {
+                let got = sk.get_value_at_quantile(p).expect("quantile");
+                let want = true_quantile(&vals, p);
+                let err = rel_err(got, want);
+                assert!(
+                    err <= tol,
+                    "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
+                    name, p, err, got, want, tol
+                );
+            }
+        }
+
+        // Mean and std chosen so almost all samples are positive.
+        let mean = 1_000.0;
+        let std = 100.0;
+
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+            let seed = 0xC0DE_0000_u64 + idx as u64;
+            let (sketch, values) = build_dds_with_normal(ALPHA, n, mean, std, seed);
+            assert_quantiles_within_error_dds(&sketch, values, QUANTILES, ALPHA);
         }
     }
 }
