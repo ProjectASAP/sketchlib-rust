@@ -104,11 +104,7 @@ mod tests {
         );
 
         let zipf_values = sample_zipf_u64(10_000, 1.1, SAMPLE_SIZE, 7);
-        let zipf_input_cardinality = zipf_values
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>()
-            .len();
+        let zipf_input_cardinality = zipf_values.iter().copied().collect::<HashSet<_>>().len();
         let zipf_hash_cardinality = zipf_values
             .iter()
             .map(|value| hash_it_to_128(SEED_IDX, &SketchInput::U64(*value)))

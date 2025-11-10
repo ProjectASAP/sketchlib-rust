@@ -1,5 +1,5 @@
+use crate::hash_it_to_128;
 use crate::{LASTSTATE, SketchInput, Vector1D};
-use crate::{hash_it, hash_it_to_128};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
@@ -32,7 +32,13 @@ impl HyperLogLog {
     }
 
     pub fn insert(&mut self, obj: &SketchInput) {
-        let hashed_val = hash_it(LASTSTATE, obj);
+        let hashed_val = hash_it_to_128(LASTSTATE, obj);
+        self.insert_with_hash(hashed_val);
+    }
+
+    #[inline(always)]
+    pub fn insert_with_hash(&mut self, hashed: u128) {
+        let hashed_val = hashed as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
         self.registers.update_if_greater(bucket_num, leading_zero);
@@ -129,12 +135,9 @@ impl HllDf {
     pub fn insert(&mut self, obj: &SketchInput) {
         let hashed_val = hash_it_to_128(LASTSTATE, obj);
         self.insert_with_hash(hashed_val);
-        // let hashed_val = hash_it(LASTSTATE, obj);
-        // let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
-        // let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
-        // self.registers.update_if_greater(bucket_num, leading_zero);
     }
 
+    #[inline(always)]
     pub fn insert_with_hash(&mut self, h: u128) {
         let hashed_val = h as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
@@ -265,7 +268,13 @@ impl HllDs {
     /// "Back to the Future: an Even More Nearly Optimal Cardinality Estimation Algorithm"
     /// Kevin J. Lang, https://arxiv.org/pdf/1708.06839
     pub fn insert(&mut self, obj: &SketchInput) {
-        let hashed_val = hash_it(LASTSTATE, obj);
+        let hashed_val = hash_it_to_128(LASTSTATE, obj);
+        self.insert_with_hash(hashed_val);
+    }
+
+    #[inline(always)]
+    pub fn insert_with_hash(&mut self, hashed: u128) {
+        let hashed_val = hashed as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
         let old_value = *self.registers.get(bucket_num).unwrap();
@@ -458,6 +467,32 @@ mod tests {
     #[test]
     fn hllds_round_trip_serialization() {
         assert_serialization_round_trip::<HllDs>("HllDs");
+    }
+
+    // insert 10 values and check corresponding counter is updated
+    #[test]
+    fn hll_correctness_test() {
+        let mut hll = HyperLogLog::default();
+        hll.insert_with_hash(0x0002_0000_0000_0000);
+        assert_eq!(hll.registers[0], 1, "the first bit should be 1, but get {}", hll.registers[0]);
+        hll.insert_with_hash(0x0000_0000_0000_0000);
+        assert_eq!(hll.registers[0], 51, "the first bit should be 51, but get {}", hll.registers[0]);
+        hll.insert_with_hash(0xfffc_3000_0000_0000);
+        assert_eq!(hll.registers[HLL_P_MASK as usize], 5, "the last bit should be 5, but get {}", hll.registers[HLL_P_MASK as usize]);
+        hll.insert_with_hash(0xcafe_0000_0000_0000);
+        assert_eq!(hll.registers[12991], 1, "the 12991th bit should be 1, but get {}", hll.registers[12991]);
+        hll.insert_with_hash(0xcafc_00ce_cafe_face);
+        assert_eq!(hll.registers[12991], 11, "the 12991th bit should be 11, but get {}", hll.registers[12991]);
+        hll.insert_with_hash(0xface_cafe_face_cafe);
+        assert_eq!(hll.registers[16051], 1, "the 16051th bit should be 1, but get {}", hll.registers[16051]);
+        hll.insert_with_hash(0xfacc_ca00_0000_cafe);
+        assert_eq!(hll.registers[16051], 3, "the 16051th bit should be 3, but get {}", hll.registers[16051]);
+        hll.insert_with_hash(0x0831_8310_0000_0000);
+        assert_eq!(hll.registers[524], 2, "the 8390th bit should be 5, but get {}", hll.registers[8390]);
+        hll.insert_with_hash(0x3014_1592_6535_8000);
+        assert_eq!(hll.registers[3077], 6, "the 12308th bit should be 4, but get {}", hll.registers[12308]);
+        hll.insert_with_hash(0xcafc_0ace_cafe_face);
+        assert_eq!(hll.registers[12991], 11, "the 12991th bit should still be 11, but get {}", hll.registers[0]);
     }
 
     fn assert_accuracy<S>(name: &str)
