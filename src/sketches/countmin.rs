@@ -1,10 +1,14 @@
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
+use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 
 use crate::Vector2D;
 use crate::{SketchInput, hash_it_to_128};
+
+#[cfg(test)]
+use std::cell::RefCell;
 
 const DEFAULT_ROW_NUM: usize = 3;
 const DEFAULT_COL_NUM: usize = 4096;
@@ -164,16 +168,303 @@ impl CountMin {
     }
 }
 
+/// Count-Min sketch variant that applies geometric sampling following the
+/// DPDK member sketch implementation. Reference:
+/// <https://github.com/DPDK/dpdk/blob/main/lib/member/rte_member_sketch.c>.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CountMinGS {
+    counts: Vector2D<u64>,
+    row: usize,
+    col: usize,
+    sample_rate: f64,
+    until_next: usize,
+}
+
+impl Default for CountMinGS {
+    fn default() -> Self {
+        Self::with_dimensions_and_sample_rate(DEFAULT_ROW_NUM, DEFAULT_COL_NUM, 1.0)
+    }
+}
+
+impl CountMinGS {
+    pub fn with_dimensions_and_sample_rate(
+        rows: usize,
+        cols: usize,
+        sample_rate: f64,
+    ) -> Self {
+        assert!(rows > 0, "CountMinGS requires at least one row");
+        assert!(cols > 0, "CountMinGS requires at least one column");
+        assert!(
+            !sample_rate.is_nan() && sample_rate > 0.0 && sample_rate <= 1.0,
+            "sample_rate must be within (0.0, 1.0]"
+        );
+
+        let mut counts = Vector2D::init(rows, cols);
+        counts.fill(0);
+
+        CountMinGS {
+            counts,
+            row: rows,
+            col: cols,
+            sample_rate,
+            until_next: 0,
+        }
+    }
+
+    pub fn with_sample_rate(sample_rate: f64) -> Self {
+        Self::with_dimensions_and_sample_rate(DEFAULT_ROW_NUM, DEFAULT_COL_NUM, sample_rate)
+    }
+
+    pub fn rows(&self) -> usize {
+        self.row
+    }
+
+    pub fn cols(&self) -> usize {
+        self.col
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
+    pub fn insert(&mut self, value: &SketchInput) {
+        self.fast_insert(value);
+    }
+
+    pub fn fast_insert(&mut self, value: &SketchInput) {
+        let hashed_val = hash_it_to_128(0, value);
+        self.fast_insert_with_hash_value(hashed_val);
+    }
+
+    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
+        self.apply_sampled_update(hashed_val, 1);
+    }
+
+    pub fn estimate(&self, value: &SketchInput) -> u64 {
+        let mut min = u64::MAX;
+        for r in 0..self.row {
+            let hashed = hash_it_to_128(r, value);
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
+            min = min.min(self.counts[r][col]);
+        }
+        min
+    }
+
+    pub fn fast_estimate(&self, value: &SketchInput) -> u64 {
+        let hashed_val = hash_it_to_128(0, value);
+        self.fast_estimate_with_hash(hashed_val)
+    }
+
+    pub fn fast_estimate_with_hash(&self, hashed_val: u128) -> u64 {
+        self.counts.fast_query_min(hashed_val, |val, _, _| *val)
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        assert_eq!(
+            (self.row, self.col),
+            (other.row, other.col),
+            "dimension mismatch while merging CountMinGS sketches"
+        );
+        assert!(
+            (self.sample_rate - other.sample_rate).abs() <= f64::EPSILON,
+            "sample_rate mismatch while merging CountMinGS sketches"
+        );
+
+        for i in 0..self.row {
+            for j in 0..self.col {
+                self.counts[i][j] += other.counts[i][j];
+            }
+        }
+        // Reset sampling state after merge to avoid biasing follow-up inserts.
+        self.until_next = 0;
+    }
+
+    pub fn as_storage(&self) -> &Vector2D<u64> {
+        &self.counts
+    }
+
+    pub fn as_storage_mut(&mut self) -> &mut Vector2D<u64> {
+        &mut self.counts
+    }
+
+    pub fn debug(&self) {
+        for row in 0..self.row {
+            println!("row {}: {:?}", row, &self.counts.row_slice(row));
+        }
+    }
+
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
+    }
+
+    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        self.serialize_to_bytes()
+    }
+
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        Self::deserialize_from_bytes(bytes)
+    }
+
+    fn apply_sampled_update(&mut self, hashed_val: u128, weight: u64) {
+        if weight == 0 {
+            return;
+        }
+
+        if self.is_full_sampling() {
+            self.counts
+                .fast_insert(|counter, value, _| *counter += value, weight, hashed_val);
+            return;
+        }
+
+        if self.row == 0 {
+            return;
+        }
+
+        if self.until_next >= self.row {
+            self.until_next -= self.row;
+            return;
+        }
+
+        let mask_bits = self.counts.get_mask_bits();
+        let mask = if mask_bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << mask_bits) - 1
+        };
+        let cols = self.col;
+        let mut current_row = self.until_next;
+        let delta = self.scaled_increment(weight);
+
+        loop {
+            let hashed = (hashed_val >> (mask_bits as usize * current_row)) & mask;
+            let col = (hashed as usize) % cols;
+            self.counts[current_row][col] += delta;
+
+            self.until_next = draw_geometric(self.sample_rate);
+            if current_row + self.until_next >= self.row {
+                break;
+            }
+            current_row += self.until_next;
+        }
+
+        let remaining = self.row - current_row;
+        if remaining > 0 {
+            self.until_next -= remaining;
+        }
+    }
+
+    #[inline]
+    fn scaled_increment(&self, weight: u64) -> u64 {
+        if self.is_full_sampling() {
+            weight
+        } else {
+            ((weight as f64) / self.sample_rate).ceil() as u64
+        }
+    }
+
+    #[inline]
+    fn is_full_sampling(&self) -> bool {
+        (self.sample_rate - 1.0).abs() <= f64::EPSILON
+    }
+}
+
+fn draw_geometric(sample_rate: f64) -> usize {
+    if (sample_rate - 1.0).abs() <= f64::EPSILON {
+        return 1;
+    }
+
+    let log_one_minus = (1.0 - sample_rate).ln();
+    loop {
+        let rand = random_unit_interval();
+        if rand <= 0.0 || rand >= 1.0 {
+            continue;
+        }
+        let draw = ((1.0 - rand).ln() / log_one_minus).ceil();
+        if draw.is_finite() && draw >= 1.0 {
+            return draw as usize;
+        }
+    }
+}
+
+fn random_unit_interval() -> f64 {
+    #[cfg(test)]
+    {
+        if let Some(value) = TEST_RANDOM_VALUES.with(|slot| slot.borrow_mut().pop()) {
+            return value;
+        }
+    }
+
+    let mut generator = rng();
+    generator.random_range(0.0..1.0)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RANDOM_VALUES: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SketchInput;
+    use crate::{HHHeap, SketchInput};
     use crate::test_utils::sample_zipf_u64;
     use std::collections::HashMap;
 
     fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
         let hash = hash_it_to_128(row, key);
         ((hash & ((0x1 << 32) - 1)) as usize) % columns
+    }
+
+    fn generate_unique_keys(rows: usize, cols: usize, count: usize) -> Vec<u64> {
+        let mut keys = Vec::with_capacity(count);
+        let mut positions: Vec<Vec<usize>> = Vec::with_capacity(count);
+        let mut candidate = 0u64;
+
+        while keys.len() < count {
+            let key = SketchInput::U64(candidate);
+            let candidate_positions: Vec<usize> = (0..rows)
+                .map(|row| counter_index(row, &key, cols))
+                .collect();
+
+            let collision_free = positions.iter().all(|existing| {
+                existing
+                    .iter()
+                    .zip(candidate_positions.iter())
+                    .all(|(a, b)| a != b)
+            });
+
+            if collision_free {
+                keys.push(candidate);
+                positions.push(candidate_positions);
+            }
+
+            candidate = candidate.saturating_add(1);
+        }
+
+        keys
+    }
+
+    fn snapshot_topk(heap: &HHHeap) -> Vec<(String, i64)> {
+        let mut items: Vec<(String, i64)> = heap
+            .heap()
+            .iter()
+            .map(|item| (item.key.clone(), item.count))
+            .collect();
+        items.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        items
+    }
+
+    fn push_test_random_values(samples: &[f64]) {
+        super::TEST_RANDOM_VALUES.with(|slot| {
+            let mut storage = slot.borrow_mut();
+            for &value in samples.iter().rev() {
+                storage.push(value);
+            }
+        });
     }
 
     fn run_zipf_stream(
@@ -285,6 +576,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn countmingst_sampling_respects_geometric_draws() {
+        const SAMPLE_RATE: f64 = 0.5;
+        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(4, 1, SAMPLE_RATE);
+        push_test_random_values(&[0.75, 0.875]); // draws: 2, 3
+
+        let key = SketchInput::U64(123);
+        sketch.fast_insert(&key);
+
+        let counters: Vec<u64> = (0..4)
+            .map(|row| sketch.as_storage().query_one_counter(row, 0))
+            .collect();
+        assert_eq!(
+            counters,
+            vec![2_u64, 0, 2, 0],
+            "expected only rows 0 and 2 to be updated"
+        );
+        assert_eq!(
+            sketch.until_next, 1,
+            "remaining skip state should carry over between inserts"
+        );
+    }
+
+    #[test]
+    fn countmingst_matches_standard_when_sampling_is_full() {
+        let mut gs = CountMinGS::with_dimensions_and_sample_rate(3, 64, 1.0);
+        let mut cm = CountMin::with_dimensions(3, 64);
+
+        let keys = vec![
+            SketchInput::Str("alpha"),
+            SketchInput::Str("beta"),
+            SketchInput::Str("gamma"),
+            SketchInput::Str("delta"),
+            SketchInput::Str("epsilon"),
+        ];
+
+        for key in &keys {
+            gs.fast_insert(key);
+            cm.fast_insert(key);
+        }
+
+        for key in &keys {
+            assert_eq!(gs.fast_estimate(key), cm.fast_estimate(key));
+        }
+    }
+
     // #[test]
     // fn get_est_returns_smallest_counter_for_key() {
     //     let mut cm = CountMin::with_dimensions(3, 32);
@@ -387,6 +724,55 @@ mod tests {
         assert_eq!(
             sketch.as_storage().as_slice(),
             decoded.as_storage().as_slice()
+        );
+    }
+
+    #[test]
+    fn countmin_topk_matches_truth_with_heap() {
+        const ROWS: usize = 5;
+        const COLS: usize = 4096;
+        const TOP_K: usize = 3;
+        const NOISE_KEYS: usize = 12;
+        const NOISE_COUNT: u64 = 4;
+        const HEAVY_COUNTS: [u64; TOP_K] = [90, 70, 50];
+
+        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(ROWS, COLS, 0.1);
+        let keys = generate_unique_keys(ROWS, COLS, TOP_K + NOISE_KEYS);
+        let heavy_keys = &keys[..TOP_K];
+        let noise_keys = &keys[TOP_K..];
+        let mut truth = HashMap::<u64, u64>::new();
+
+        for (value, &count) in heavy_keys.iter().zip(HEAVY_COUNTS.iter()) {
+            let key = SketchInput::U64(*value);
+            for _ in 0..count {
+                sketch.insert(&key);
+                *truth.entry(*value).or_insert(0) += 1;
+            }
+        }
+
+        for &value in noise_keys {
+            let key = SketchInput::U64(value);
+            for _ in 0..NOISE_COUNT {
+                sketch.insert(&key);
+                *truth.entry(value).or_insert(0) += 1;
+            }
+        }
+
+        let mut truth_heap = HHHeap::new(TOP_K);
+        for (&value, &count) in &truth {
+            truth_heap.update(&value.to_string(), count as i64);
+        }
+
+        let mut estimated_heap = HHHeap::new(TOP_K);
+        for (&value, _) in &truth {
+            let estimate = sketch.estimate(&SketchInput::U64(value));
+            estimated_heap.update(&value.to_string(), estimate as i64);
+        }
+
+        assert_eq!(
+            snapshot_topk(&truth_heap),
+            snapshot_topk(&estimated_heap),
+            "CountMin heavy hitters should match the exact top-k ordering when keys avoid collisions"
         );
     }
 }
