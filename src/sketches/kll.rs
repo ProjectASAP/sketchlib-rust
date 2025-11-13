@@ -131,7 +131,7 @@ impl Coin {
 impl Compactor {
     pub fn new() -> Self {
         Compactor {
-            items: Vector1D::init(0)
+            items: Vector1D::init(0),
         }
     }
 
@@ -350,7 +350,9 @@ impl KLL {
         }
 
         for (h, c_other) in other.compactors.iter().enumerate() {
-            self.compactors[h].items.extend_from_slice(c_other.items.as_slice());
+            self.compactors[h]
+                .items
+                .extend_from_slice(c_other.items.as_slice());
         }
 
         self.update_size();
@@ -619,7 +621,10 @@ mod tests {
         // Test error handling for non-numeric input
         let result = kll.update(&SketchInput::String("not a number".to_string()));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "KLL sketch only accepts numeric inputs");
+        assert_eq!(
+            result.unwrap_err(),
+            "KLL sketch only accepts numeric inputs"
+        );
     }
 
     #[test]

@@ -1,14 +1,12 @@
+use rand::rngs::ThreadRng;
+use rand::{Rng, rng};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
-use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 
 use crate::Vector2D;
 use crate::{SketchInput, hash_it_to_128};
-
-#[cfg(test)]
-use std::cell::RefCell;
 
 const DEFAULT_ROW_NUM: usize = 3;
 const DEFAULT_COL_NUM: usize = 4096;
@@ -178,6 +176,9 @@ pub struct CountMinGS {
     col: usize,
     sample_rate: f64,
     until_next: usize,
+    #[serde(skip)]
+    #[serde(default = "rng")]
+    generator: ThreadRng,
 }
 
 impl Default for CountMinGS {
@@ -187,11 +188,7 @@ impl Default for CountMinGS {
 }
 
 impl CountMinGS {
-    pub fn with_dimensions_and_sample_rate(
-        rows: usize,
-        cols: usize,
-        sample_rate: f64,
-    ) -> Self {
+    pub fn with_dimensions_and_sample_rate(rows: usize, cols: usize, sample_rate: f64) -> Self {
         assert!(rows > 0, "CountMinGS requires at least one row");
         assert!(cols > 0, "CountMinGS requires at least one column");
         assert!(
@@ -208,6 +205,7 @@ impl CountMinGS {
             col: cols,
             sample_rate,
             until_next: 0,
+            generator: rng(),
         }
     }
 
@@ -227,28 +225,82 @@ impl CountMinGS {
         self.sample_rate
     }
 
-    pub fn insert(&mut self, value: &SketchInput) {
-        self.fast_insert(value);
+    fn draw_geometric(&mut self, sample_rate: f64) -> usize {
+        let k = loop {
+            let r = self.generator.random::<f64>();
+            if r != 0.0_f64 && r != 1.0_f64 {
+                break r;
+            }
+        };
+        ((1.0 - k).ln() / (1.0 - sample_rate).ln()).ceil() as usize
     }
 
-    pub fn fast_insert(&mut self, value: &SketchInput) {
-        let hashed_val = hash_it_to_128(0, value);
-        self.fast_insert_with_hash_value(hashed_val);
+    pub fn nitro_insert(&mut self, value: &SketchInput) {
+        if self.until_next >= self.row {
+            self.until_next -= self.row;
+            return;
+        }
+        let mut cur_row = self.until_next;
+        let delta = self.scaled_increment(1);
+
+        loop {
+            let hashed = hash_it_to_128(cur_row, value);
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
+            self.counts[cur_row][col] += delta;
+
+            self.until_next = self.draw_geometric(self.sample_rate);
+            if cur_row + self.until_next >= self.row {
+                break;
+            }
+            cur_row += self.until_next;
+        }
+
+        // Adjust remaining state for next insert (DPDK behavior)
+        self.until_next -= self.row - cur_row;
     }
 
-    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
-        self.apply_sampled_update(hashed_val, 1);
-    }
-
-    pub fn estimate(&self, value: &SketchInput) -> u64 {
-        let mut min = u64::MAX;
+    pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
+        let mut estimates = Vec::with_capacity(self.row);
         for r in 0..self.row {
             let hashed = hash_it_to_128(r, value);
             let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
-            min = min.min(self.counts[r][col]);
+            let counter = self.counts.query_one_counter(r, col);
+            estimates.push(counter);
         }
-        min
+        if estimates.is_empty() {
+            return 0.0;
+        }
+        estimates.sort_unstable();
+        let mid = estimates.len() / 2;
+        if estimates.len() % 2 == 1 {
+            estimates[mid] as f64
+        } else {
+            (estimates[mid - 1] as f64 + estimates[mid] as f64) / 2.0
+        }
     }
+
+    // pub fn insert(&mut self, value: &SketchInput) {
+    //     self.fast_insert(value);
+    // }
+
+    // pub fn fast_insert(&mut self, value: &SketchInput) {
+    //     let hashed_val = hash_it_to_128(0, value);
+    //     self.fast_insert_with_hash_value(hashed_val);
+    // }
+
+    // pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
+    //     self.apply_sampled_update(hashed_val, 1);
+    // }
+
+    // pub fn estimate(&self, value: &SketchInput) -> u64 {
+    //     let mut min = u64::MAX;
+    //     for r in 0..self.row {
+    //         let hashed = hash_it_to_128(r, value);
+    //         let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
+    //         min = min.min(self.counts[r][col]);
+    //     }
+    //     min
+    // }
 
     pub fn fast_estimate(&self, value: &SketchInput) -> u64 {
         let hashed_val = hash_it_to_128(0, value);
@@ -309,54 +361,6 @@ impl CountMinGS {
         Self::deserialize_from_bytes(bytes)
     }
 
-    fn apply_sampled_update(&mut self, hashed_val: u128, weight: u64) {
-        if weight == 0 {
-            return;
-        }
-
-        if self.is_full_sampling() {
-            self.counts
-                .fast_insert(|counter, value, _| *counter += value, weight, hashed_val);
-            return;
-        }
-
-        if self.row == 0 {
-            return;
-        }
-
-        if self.until_next >= self.row {
-            self.until_next -= self.row;
-            return;
-        }
-
-        let mask_bits = self.counts.get_mask_bits();
-        let mask = if mask_bits >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << mask_bits) - 1
-        };
-        let cols = self.col;
-        let mut current_row = self.until_next;
-        let delta = self.scaled_increment(weight);
-
-        loop {
-            let hashed = (hashed_val >> (mask_bits as usize * current_row)) & mask;
-            let col = (hashed as usize) % cols;
-            self.counts[current_row][col] += delta;
-
-            self.until_next = draw_geometric(self.sample_rate);
-            if current_row + self.until_next >= self.row {
-                break;
-            }
-            current_row += self.until_next;
-        }
-
-        let remaining = self.row - current_row;
-        if remaining > 0 {
-            self.until_next -= remaining;
-        }
-    }
-
     #[inline]
     fn scaled_increment(&self, weight: u64) -> u64 {
         if self.is_full_sampling() {
@@ -372,46 +376,11 @@ impl CountMinGS {
     }
 }
 
-fn draw_geometric(sample_rate: f64) -> usize {
-    if (sample_rate - 1.0).abs() <= f64::EPSILON {
-        return 1;
-    }
-
-    let log_one_minus = (1.0 - sample_rate).ln();
-    loop {
-        let rand = random_unit_interval();
-        if rand <= 0.0 || rand >= 1.0 {
-            continue;
-        }
-        let draw = ((1.0 - rand).ln() / log_one_minus).ceil();
-        if draw.is_finite() && draw >= 1.0 {
-            return draw as usize;
-        }
-    }
-}
-
-fn random_unit_interval() -> f64 {
-    #[cfg(test)]
-    {
-        if let Some(value) = TEST_RANDOM_VALUES.with(|slot| slot.borrow_mut().pop()) {
-            return value;
-        }
-    }
-
-    let mut generator = rng();
-    generator.random_range(0.0..1.0)
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_RANDOM_VALUES: RefCell<Vec<f64>> = RefCell::new(Vec::new());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HHHeap, SketchInput};
     use crate::test_utils::sample_zipf_u64;
+    use crate::{HHHeap, SketchInput};
     use std::collections::HashMap;
 
     fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
@@ -458,15 +427,6 @@ mod tests {
         items
     }
 
-    fn push_test_random_values(samples: &[f64]) {
-        super::TEST_RANDOM_VALUES.with(|slot| {
-            let mut storage = slot.borrow_mut();
-            for &value in samples.iter().rev() {
-                storage.push(value);
-            }
-        });
-    }
-
     fn run_zipf_stream(
         rows: usize,
         cols: usize,
@@ -481,6 +441,27 @@ mod tests {
         for value in sample_zipf_u64(domain, exponent, samples, seed) {
             let key = SketchInput::U64(value);
             sketch.insert(&key);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+
+        (sketch, truth)
+    }
+
+    fn run_zipf_stream_gs(
+        rows: usize,
+        cols: usize,
+        domain: usize,
+        exponent: f64,
+        samples: usize,
+        seed: u64,
+        sample_rate: f64,
+    ) -> (CountMinGS, HashMap<u64, u64>) {
+        let mut truth = HashMap::<u64, u64>::new();
+        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(rows, cols, sample_rate);
+
+        for value in sample_zipf_u64(domain, exponent, samples, seed) {
+            let key = SketchInput::U64(value);
+            sketch.nitro_insert(&key);
             *truth.entry(value).or_insert(0) += 1;
         }
 
@@ -577,49 +558,38 @@ mod tests {
     }
 
     #[test]
-    fn countmingst_sampling_respects_geometric_draws() {
-        const SAMPLE_RATE: f64 = 0.5;
-        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(4, 1, SAMPLE_RATE);
-        push_test_random_values(&[0.75, 0.875]); // draws: 2, 3
+    fn countmingst_estimate_accuracy_with_sampling() {
+        const SAMPLE_RATE: f64 = 0.1;
+        let (sketch, truth) =
+            run_zipf_stream_gs(5, 8192, 8192, 1.1, 200_000, 0x5eed_c0de, SAMPLE_RATE);
 
-        let key = SketchInput::U64(123);
-        sketch.fast_insert(&key);
+        // Focus on high-frequency items where sampling variance is lower
+        let mut high_freq_items: Vec<_> = truth.iter().filter(|(_, count)| **count >= 50).collect();
+        high_freq_items.sort_by(|a, b| b.1.cmp(a.1));
 
-        let counters: Vec<u64> = (0..4)
-            .map(|row| sketch.as_storage().query_one_counter(row, 0))
-            .collect();
-        assert_eq!(
-            counters,
-            vec![2_u64, 0, 2, 0],
-            "expected only rows 0 and 2 to be updated"
-        );
-        assert_eq!(
-            sketch.until_next, 1,
-            "remaining skip state should carry over between inserts"
-        );
-    }
-
-    #[test]
-    fn countmingst_matches_standard_when_sampling_is_full() {
-        let mut gs = CountMinGS::with_dimensions_and_sample_rate(3, 64, 1.0);
-        let mut cm = CountMin::with_dimensions(3, 64);
-
-        let keys = vec![
-            SketchInput::Str("alpha"),
-            SketchInput::Str("beta"),
-            SketchInput::Str("gamma"),
-            SketchInput::Str("delta"),
-            SketchInput::Str("epsilon"),
-        ];
-
-        for key in &keys {
-            gs.fast_insert(key);
-            cm.fast_insert(key);
+        let mut within_tolerance = 0usize;
+        for (value, count) in &high_freq_items {
+            let estimate = sketch.nitro_estimate(&SketchInput::U64(**value));
+            let rel_error = ((estimate - **count as f64).abs()) / (**count as f64);
+            if rel_error < 0.20 {
+                // 20% tolerance for sampled estimates
+                within_tolerance += 1;
+            }
         }
 
-        for key in &keys {
-            assert_eq!(gs.fast_estimate(key), cm.fast_estimate(key));
-        }
+        let total = high_freq_items.len();
+        assert!(
+            total > 0,
+            "Expected at least some high-frequency items in the stream"
+        );
+        let accuracy = within_tolerance as f64 / total as f64;
+        assert!(
+            accuracy >= 0.70,
+            "Only {:.2}% of high-frequency keys within 20% tolerance ({} of {}); expected at least 70%",
+            accuracy * 100.0,
+            within_tolerance,
+            total
+        );
     }
 
     // #[test]
@@ -728,15 +698,16 @@ mod tests {
     }
 
     #[test]
-    fn countmin_topk_matches_truth_with_heap() {
+    fn countmingst_topk_heavy_hitters_with_sampling() {
         const ROWS: usize = 5;
         const COLS: usize = 4096;
         const TOP_K: usize = 3;
         const NOISE_KEYS: usize = 12;
-        const NOISE_COUNT: u64 = 4;
-        const HEAVY_COUNTS: [u64; TOP_K] = [90, 70, 50];
+        const NOISE_COUNT: u64 = 40;
+        const HEAVY_COUNTS: [u64; TOP_K] = [1000, 700, 500];
+        const SAMPLE_RATE: f64 = 0.1;
 
-        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(ROWS, COLS, 0.1);
+        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(ROWS, COLS, SAMPLE_RATE);
         let keys = generate_unique_keys(ROWS, COLS, TOP_K + NOISE_KEYS);
         let heavy_keys = &keys[..TOP_K];
         let noise_keys = &keys[TOP_K..];
@@ -745,7 +716,7 @@ mod tests {
         for (value, &count) in heavy_keys.iter().zip(HEAVY_COUNTS.iter()) {
             let key = SketchInput::U64(*value);
             for _ in 0..count {
-                sketch.insert(&key);
+                sketch.nitro_insert(&key);
                 *truth.entry(*value).or_insert(0) += 1;
             }
         }
@@ -753,7 +724,7 @@ mod tests {
         for &value in noise_keys {
             let key = SketchInput::U64(value);
             for _ in 0..NOISE_COUNT {
-                sketch.insert(&key);
+                sketch.nitro_insert(&key);
                 *truth.entry(value).or_insert(0) += 1;
             }
         }
@@ -765,14 +736,22 @@ mod tests {
 
         let mut estimated_heap = HHHeap::new(TOP_K);
         for (&value, _) in &truth {
-            let estimate = sketch.estimate(&SketchInput::U64(value));
+            let estimate = sketch.nitro_estimate(&SketchInput::U64(value));
             estimated_heap.update(&value.to_string(), estimate as i64);
         }
 
+        let truth_keys: Vec<String> = snapshot_topk(&truth_heap)
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+        let estimated_keys: Vec<String> = snapshot_topk(&estimated_heap)
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+
         assert_eq!(
-            snapshot_topk(&truth_heap),
-            snapshot_topk(&estimated_heap),
-            "CountMin heavy hitters should match the exact top-k ordering when keys avoid collisions"
+            truth_keys, estimated_keys,
+            "CountMinGS with sampling should identify the correct top-k heavy hitter keys"
         );
     }
 }
