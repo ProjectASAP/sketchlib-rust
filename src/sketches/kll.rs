@@ -29,16 +29,13 @@ fn sketch_input_to_f64(input: &SketchInput) -> Result<f64, &'static str> {
     }
 }
 
+/// Coin to ensure that the coin toss is consistent
+/// across multiple flip
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Coin {
     st: u64,
     mask: u64,
 }
-
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// struct Compactor {
-//     items: Vector1D<f64>,
-// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Quantile {
@@ -54,16 +51,11 @@ pub struct CDF {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KLL {
     compactors: Vector1D<Vector1D<f64>>,
-    k: i32,
-    compactor_count: i32,
-    size: i32,     // number of current data
-    max_size: i32, // max number of data at current height
+    k: usize,
+    total_count: usize,
     co: Coin,
 }
 
-// the coin is... not intuitive
-// well... well... well...
-// whatever, it seems to be usable
 impl Coin {
     pub fn new() -> Self {
         let mut rng = rng();
@@ -91,85 +83,35 @@ impl Coin {
     }
 }
 
-// impl Compactor {
-//     pub fn new() -> Self {
-//         Compactor {
-//             items: Vector1D::init(0)
-//         }
-//     }
-
-//     // what is the difference between :-(
-//     // mut co: &Coin
-//     // co: &mut Coin
-//     pub fn compact(&mut self, co: &mut Coin, mut dst: Vec<f64>) -> Vec<f64> {
-//         let l = self.items.len();
-//         if l == 0 || l == 1 {
-//         } else if l == 2 {
-//             if self.items[0] > self.items[1] {
-//                 // let temp = self.items[0];
-//                 // self.items[0] = self.items[1];
-//                 // self.items[1] = temp;
-//                 self.items.swap(0, 1);
-//             }
-//         } else {
-//             self.items.sort_by(|a, b| a.partial_cmp(b).unwrap());
-//         }
-//         let keep = co.toss() as usize;
-//         for i in 0..self.items.len() {
-//             if i % 2 == keep {
-//                 dst.push(self.items[i]);
-//             }
-//         }
-//         dst
-//     }
-
-//     pub fn print_compactor(&self) {
-//         println!("compactor: {:?}", self.items);
-//     }
-
-//     pub fn append_all(&mut self, to_add: &mut Vec<f64>) {
-//         self.items.append(to_add);
-//     }
-
-//     // probably helper function to save some effort
-//     pub fn size(&self) -> i32 {
-//         self.items.len() as i32
-//     }
-// }
-
 impl KLL {
     pub fn init_kll(k: i32) -> Self {
-        let mut kll = KLL {
-            // compactors: vec![Compactor::new()],
-            // compactors: Vec::new(),
-            compactors: Vector1D::filled(5, Vector1D::init(0)),
-            k,
-            compactor_count: 1,
-            size: 0,
-            max_size: 0,
+        let mut compactors = Vector1D::init(1);
+        compactors.push(Vector1D::init(0));
+        KLL {
+            compactors,
+            k: k.max(2) as usize,
+            total_count: 0,
             co: Coin::new(),
-        };
-        kll.max_size = kll.capacity(0);
-        kll
-    }
-
-    fn set_max_size(&mut self) {
-        self.max_size = 0;
-        for i in 0..self.compactor_count {
-            self.max_size += KLL::capacity(self, i);
         }
     }
 
     fn grow(&mut self) {
-        // self.compactors.push(Compactor::new());
         self.compactors.push(Vector1D::init(0));
-        self.compactor_count = self.compactors.len() as i32;
-        self.set_max_size();
     }
 
-    fn capacity(&self, i: i32) -> i32 {
-        let height = KLL::compute_height(self.compactors.len() as i32 - i - 1);
-        (f64::ceil(self.k as f64 * height) as i32) + 1
+    fn capacity(&self, level: usize) -> usize {
+        let height = KLL::compute_height(self.compactors.len() as i32 - level as i32 - 1);
+        (f64::ceil(self.k as f64 * height) as usize) + 1
+    }
+
+    fn ensure_level(&mut self, level: usize) {
+        while level >= self.compactors.len() {
+            self.grow();
+        }
+    }
+
+    fn buffer_size(&self) -> usize {
+        self.compactors.iter().map(|c| c.len()).sum()
     }
 
     fn compute_height(i: i32) -> f64 {
@@ -181,87 +123,74 @@ impl KLL {
     /// Returns an error if the input is not numeric
     pub fn update(&mut self, x: &SketchInput) -> Result<(), &'static str> {
         let value = sketch_input_to_f64(x)?;
-        // self.compactors[0].items.push(value);
         self.compactors[0].push(value);
-        self.size += 1;
-        self.compact();
+        self.total_count += 1;
+        self.compact_from_level(0);
         Ok(())
     }
 
     /// Update the sketch with a raw f64 value (for internal use and testing)
     pub fn update_f64(&mut self, x: f64) {
-        // self.compactors[0].items.push(x);
         self.compactors[0].push(x);
-        self.size += 1;
-        self.compact();
+        self.total_count += 1;
+        self.compact_from_level(0);
     }
 
     pub fn print_compactors(&self) {
         for c in self.compactors.iter() {
-            // c.print_compactor();
-            // println!("{}th compactor: {:?}", i, self.compactors[i].items);
             println!("{:?}", c);
         }
     }
 
     pub fn compact(&mut self) {
-        // I will have some empty compactors...
-        // that is... possible... right?
-        // did I just compact too aggresively?
-        for i in 0..self.compactor_count {
-            // I think the capacity can be reached, right?
-            // so, just, >, not >=... right?
-            // if self.compactors[i as usize].size() > self.capacity(i) {
-            if self.compactors[i as usize].len() > self.capacity(i) as usize {
-                // do I really want to grow at this moment?
-                if i + 1 >= self.compactor_count {
-                    self.grow();
-                }
-                // let to_compact_size = self.compactors[i as usize].size();
-                // let next_to_compact_size = self.compactors[i as usize + 1].size();
-                // let mut new_items = self.compactors[i as usize].compact(&mut self.co, Vec::new());
-                // self.compactors[i as usize + 1].append_all(&mut new_items);
-                // self.compactors[i as usize].items.clear();
-                // self.size = self.size
-                //     + self.compactors[i as usize].size()
-                //     + self.compactors[i as usize + 1].size();
-                // self.size = self.size - to_compact_size - next_to_compact_size;
-                let to_compact_size = self.compactors[i as usize].len();
-                let next_to_compact_size = self.compactors[i as usize + 1].len();
-                let mut to_push = Vector1D::init(0);
-                for &item in &self.compactors[i as usize] {
-                    if self.co.toss() % 2 == 0 {
-                    to_push.push(item.clone());}
-                }
-                for &item in &to_push {
-                    self.compactors[i as usize + 1].push(item);
-                }
-                // let mut new_items = self.compactors[i as usize].compact(&mut self.co, Vec::new());
-                // self.compactors[i as usize + 1].append_all(&mut new_items);
-                self.compactors[i as usize].clear();
-                self.size = self.size
-                    + self.compactors[i as usize].len() as i32
-                    + self.compactors[i as usize + 1].len() as i32;
-                self.size = self.size - to_compact_size as i32 - next_to_compact_size as i32;
+        self.compact_from_level(0);
+    }
+
+    fn compact_from_level(&mut self, start_level: usize) {
+        let mut level = start_level;
+        while level < self.compactors.len() {
+            let capacity = self.capacity(level);
+            if self.compactors[level].len() <= capacity {
+                level += 1;
+                continue;
             }
+            self.compact_level(level);
+            level += 1;
         }
     }
 
-    pub fn update_size(&mut self) {
-        self.size = self.compactors.iter().map(|c| c.len() as i32).sum();
+    fn compact_level(&mut self, level: usize) {
+        self.ensure_level(level + 1);
+
+        let (left, right) = self.compactors.as_mut_slice().split_at_mut(level + 1);
+        let current = &mut left[level];
+        if current.len() <= 1 {
+            return;
+        }
+        current.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let keep = self.co.toss() as usize & 1;
+        let next = &mut right[0];
+
+        for (idx, &value) in current.iter().enumerate() {
+            if (idx & 1) == keep {
+                next.push(value);
+            }
+        }
+        current.clear();
     }
 
     pub fn merge(&mut self, other: &KLL) {
-        while self.compactor_count < other.compactor_count {
-            self.grow();
+        for idx in 0..other.compactors.len() {
+            self.ensure_level(idx);
+            let other_level = &other.compactors[idx];
+            if other_level.is_empty() {
+                continue;
+            }
+            self.compactors[idx].extend_from_slice(other_level.as_slice());
         }
-
-        for (h, c_other) in other.compactors.iter().enumerate() {
-            self.compactors[h].extend_from_slice(c_other.as_slice());
-        }
-
-        self.update_size();
-        self.compact();
+        self.total_count += other.total_count;
+        self.compact_from_level(0);
     }
 
     pub fn rank(&self, x: f64) -> usize {
@@ -298,7 +227,7 @@ impl KLL {
 
     pub fn cdf(&self) -> CDF {
         let mut q: CDF = CDF {
-            quantile_list: Vec::with_capacity(self.size as usize),
+            quantile_list: Vec::with_capacity(self.buffer_size()),
         };
 
         let mut total_w = 0.0;
@@ -311,6 +240,10 @@ impl KLL {
                 });
             }
             total_w += c.len() as f64 * weight;
+        }
+
+        if total_w == 0.0 {
+            return q;
         }
 
         // Sort by value
@@ -478,8 +411,8 @@ mod tests {
 
     #[test]
     fn uniform_distribution_quantiles_within_five_percent() {
-        // const TOLERANCE: f64 = 0.05;
-        const TOLERANCE: f64 = 0.5;
+        const TOLERANCE: f64 = 0.05;
+        // const TOLERANCE: f64 = 0.5;
         const DISTRIBUTION: TestDistribution = TestDistribution::Uniform {
             min: 1_000_000.0,
             max: 10_000_000.0,
@@ -527,12 +460,16 @@ mod tests {
         // Test error handling for non-numeric input
         let result = kll.update(&SketchInput::String("not a number".to_string()));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "KLL sketch only accepts numeric inputs");
+        assert_eq!(
+            result.unwrap_err(),
+            "KLL sketch only accepts numeric inputs"
+        );
     }
 
     #[test]
     fn zipf_distribution_quantiles_within_five_percent() {
-        const TOLERANCE: f64 = 0.5;
+        // const TOLERANCE: f64 = 0.5;
+        const TOLERANCE: f64 = 0.05;
         const DISTRIBUTION: TestDistribution = TestDistribution::Zipf {
             min: 1_000_000.0,
             max: 10_000_000.0,
