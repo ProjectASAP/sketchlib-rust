@@ -182,6 +182,7 @@ pub struct CountMinGS {
     #[serde(skip)]
     #[serde(default = "rng")]
     generator: ThreadRng,
+    delta: u64,
 }
 
 impl Default for CountMinGS {
@@ -202,7 +203,7 @@ impl CountMinGS {
         let mut counts = Vector2D::init(rows, cols);
         counts.fill(0);
 
-        CountMinGS {
+        let mut cm = CountMinGS {
             counts,
             row: rows,
             col: cols,
@@ -210,7 +211,10 @@ impl CountMinGS {
             until_next: 0,
             // packet_until_next: 0,
             generator: rng(),
-        }
+            delta: 0
+        };
+        cm.delta = cm.scaled_increment(1);
+        cm
     }
 
     pub fn with_sample_rate(sample_rate: f64) -> Self {
@@ -245,7 +249,8 @@ impl CountMinGS {
             return;
         }
         let mut cur_row = self.until_next;
-        let delta = self.scaled_increment(1);
+        // let delta = self.scaled_increment(1);
+        let delta = self.delta;
 
         loop {
             let hashed = hash_it_to_128(cur_row, value);
@@ -269,7 +274,8 @@ impl CountMinGS {
             return;
         }
 
-        let delta = self.scaled_increment(1);
+        // let delta = self.scaled_increment(1);
+        let delta = self.delta;
         for row in 0..self.row {
             let hashed = hash_it_to_128(row, value);
             let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
@@ -285,7 +291,8 @@ impl CountMinGS {
             return;
         }
 
-        let delta = self.scaled_increment(1);
+        // let delta = self.scaled_increment(1);
+        let delta = self.delta;
         let hashed_val = hash_it_to_128(0, value);
         self.counts
             .fast_insert(|a, b, _| *a += b, delta, hashed_val);
