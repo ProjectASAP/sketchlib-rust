@@ -443,22 +443,15 @@ mod tests {
 
 fn quantile_from_sorted(data: &[f64], quantile: f64) -> f64 {
     assert!(!data.is_empty(), "data set must not be empty");
-        if quantile <= 0.0 {
-            return data[0];
-        }
-        if quantile >= 1.0 {
-            return data[data.len() - 1];
-        }
-        let position = quantile * (data.len() - 1) as f64;
-        let lower_index = position.floor() as usize;
-        let upper_index = position.ceil() as usize;
-        if lower_index == upper_index {
-            return data[lower_index];
-        }
-        let lower_value = data[lower_index];
-        let upper_value = data[upper_index];
-        let weight = position - lower_index as f64;
-    lower_value + (upper_value - lower_value) * weight
+    if quantile <= 0.0 {
+        return data[0];
+    }
+    if quantile >= 1.0 {
+        return data[data.len() - 1];
+    }
+    let n = data.len();
+    let idx = ((quantile * n as f64).ceil() as isize - 1).clamp(0, (n - 1) as isize) as usize;
+    data[idx]
 }
 
 fn assert_quantiles_within_error(
@@ -467,29 +460,36 @@ fn assert_quantiles_within_error(
     quantiles: &[(f64, &str)],
     tolerance: f64,
 ) {
+    // println!("sorted truth: {:?}", sorted_truth);
     let cdf = sketch.cdf();
     for &(quantile, label) in quantiles {
-        let truth = quantile_from_sorted(sorted_truth, quantile);
+        // let truth = quantile_from_sorted(sorted_truth, quantile);
+        let truth_min = quantile_from_sorted(sorted_truth, quantile-tolerance);
+        let truth_max = quantile_from_sorted(sorted_truth, quantile+tolerance);
         let estimate = cdf.query(quantile);
-        let observed_rank = sketch.quantile(truth);
-        let rank_error = (observed_rank - quantile).abs();
-        assert!(
-            rank_error <= tolerance,
-            "{label} exceeded tolerance: truth={truth:.4},
-                estimate={estimate:.4}, rank_error={rank_error:.4}, 
+        // assert!(
+        //     rank_error <= tolerance,
+        //     "{label} exceeded tolerance: truth={truth:.4},
+        //         estimate={estimate:.4}, rank_error={rank_error:.4}, 
+        //         total_length={}",
+        //     sorted_truth.len()
+        // );
+        assert!((truth_min..=truth_max).contains(&estimate),
+        "{label} exceeded tolerance: truth_min={truth_min:.4}, truth_max={truth_max:.4},
+                estimate={estimate:.4}, tolerance={tolerance:.4}, quantile={quantile:.2}, 
                 total_length={}",
             sorted_truth.len()
-        );
+    );
     }
 }
 
     #[test]
     fn uniform_distribution_quantiles_within_five_percent() {
-        const TOLERANCE: f64 = 0.1;
+        const TOLERANCE: f64 = 0.02;
         // const TOLERANCE: f64 = 0.5;
         const DISTRIBUTION: TestDistribution = TestDistribution::Uniform {
-            min: 1_000_000.0,
-            max: 10_000_000.0,
+            min: 000.0,
+            max: 10_000.0,
         };
         const QUANTILES: &[(f64, &str)] = &[
             (0.0, "min"),
