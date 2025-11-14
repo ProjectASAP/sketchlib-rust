@@ -175,7 +175,10 @@ pub struct CountMinGS {
     row: usize,
     col: usize,
     sample_rate: f64,
+    #[serde(default)]
     until_next: usize,
+    // #[serde(default)]
+    // packet_until_next: usize,
     #[serde(skip)]
     #[serde(default = "rng")]
     generator: ThreadRng,
@@ -205,6 +208,7 @@ impl CountMinGS {
             col: cols,
             sample_rate,
             until_next: 0,
+            // packet_until_next: 0,
             generator: rng(),
         }
     }
@@ -257,6 +261,36 @@ impl CountMinGS {
 
         // Adjust remaining state for next insert (DPDK behavior)
         self.until_next -= self.row - cur_row;
+    }
+
+    pub fn packet_nitro_insert(&mut self, value: &SketchInput) {
+        if self.until_next > 0 {
+            self.until_next -= 1;
+            return;
+        }
+
+        let delta = self.scaled_increment(1);
+        for row in 0..self.row {
+            let hashed = hash_it_to_128(row, value);
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
+            self.counts[row][col] += delta;
+        }
+
+        self.until_next = self.draw_geometric(self.sample_rate);
+    }
+
+    pub fn packet_nitro_fast_insert(&mut self, value: &SketchInput) {
+        if self.until_next > 0 {
+            self.until_next -= 1;
+            return;
+        }
+
+        let delta = self.scaled_increment(1);
+        let hashed_val = hash_it_to_128(0, value);
+        self.counts
+            .fast_insert(|a, b, _| *a += b, delta, hashed_val);
+
+        self.until_next = self.draw_geometric(self.sample_rate);
     }
 
     pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
@@ -329,6 +363,7 @@ impl CountMinGS {
         }
         // Reset sampling state after merge to avoid biasing follow-up inserts.
         self.until_next = 0;
+        // self.packet_until_next = 0;
     }
 
     pub fn as_storage(&self) -> &Vector2D<u64> {
@@ -511,6 +546,38 @@ mod tests {
 
         let larger_shape = CountMin::with_dimensions(5, 1_048_576);
         assert_eq!(larger_shape.as_storage().get_required_bits(), 128);
+    }
+
+    #[test]
+    fn packet_nitro_insert_matches_regular_insert_with_full_sampling() {
+        let rows = 3;
+        let cols = 64;
+        let mut gs = CountMinGS::with_dimensions_and_sample_rate(rows, cols, 1.0);
+        let mut cm = CountMin::with_dimensions(rows, cols);
+        let key = SketchInput::Str("packet");
+
+        gs.packet_nitro_insert(&key);
+        cm.insert(&key);
+
+        assert_eq!(gs.as_storage().as_slice(), cm.as_storage().as_slice());
+    }
+
+    #[test]
+    fn packet_nitro_insert_respects_skip_state() {
+        let mut sketch = CountMinGS::with_dimensions_and_sample_rate(3, 32, 0.5);
+        // sketch.packet_until_next = 2;
+        sketch.until_next = 2;
+        let key = SketchInput::U64(7);
+
+        sketch.packet_nitro_insert(&key);
+
+        assert!(sketch
+            .as_storage()
+            .as_slice()
+            .iter()
+            .all(|&counter| counter == 0));
+        // assert_eq!(sketch.packet_until_next, 1);
+        assert_eq!(sketch.until_next, 1);
     }
 
     #[test]
