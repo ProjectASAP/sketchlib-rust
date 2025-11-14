@@ -212,6 +212,16 @@ impl KLL {
         self.compact_from_level(0);
     }
 
+    /// Serialize the sketch into MessagePack bytes.
+    pub fn serialize(&self) -> Option<Vec<u8>> {
+        rmp_serde::to_vec(self).ok()
+    }
+
+    /// Deserialize a sketch from MessagePack bytes.
+    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
+        rmp_serde::from_slice(bytes).ok()
+    }
+
     /// get the rank of input x by counting how many input is smaller than x
     pub fn rank(&self, x: f64) -> usize {
         let mut r = 0;
@@ -619,5 +629,42 @@ mod tests {
         assert_eq!(cdf.quantile(123.0), 0.0);
         assert_eq!(cdf.query(0.5), 0.0);
         assert_eq!(cdf.query_li(0.5), 0.0);
+    }
+
+    #[test]
+    fn kll_round_trip_rmp() {
+        let mut sketch = KLL::init_kll(256);
+        let samples = sample_uniform_f64(0.0, 1_000_000.0, 5_000, 0xDEAD_BEEF);
+        for value in &samples {
+            sketch.update_f64(*value);
+        }
+
+        let bytes = sketch.serialize().expect("serialize KLL with rmp");
+        assert!(!bytes.is_empty(), "serialized bytes should not be empty");
+
+        let restored = KLL::deserialize(&bytes).expect("deserialize KLL with rmp");
+        assert_eq!(sketch.k, restored.k);
+        assert_eq!(sketch.total_count, restored.total_count);
+        assert_eq!(sketch.compactors.len(), restored.compactors.len());
+
+        for (original, recovered) in sketch.compactors.iter().zip(restored.compactors.iter()) {
+            assert_eq!(
+                original.as_slice(),
+                recovered.as_slice(),
+                "compactor contents differ after round-trip"
+            );
+        }
+
+        let quantiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+        let original_cdf = sketch.cdf();
+        let restored_cdf = restored.cdf();
+        for &q in &quantiles {
+            assert!(
+                (original_cdf.query(q) - restored_cdf.query(q)).abs() < f64::EPSILON,
+                "quantile mismatch at p={q}: original={}, restored={}",
+                original_cdf.query(q),
+                restored_cdf.query(q)
+            );
+        }
     }
 }
