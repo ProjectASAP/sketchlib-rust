@@ -88,7 +88,7 @@ impl Coin {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CdfEntry {
     value: f64,
-   quantile: f64,
+    quantile: f64,
 }
 
 /// KLL sketch with level compactors, the accuracy parameter `k`, running count,
@@ -131,9 +131,9 @@ impl KLL {
 
     /// push a new compactor to the end
     fn grow(&mut self) {
-        let level_idx = self.compactors.len() + 1;
-        let capacity = KLL::compactor_capacity(level_idx as i32, self.k);
-        self.compactors.push(Vector1D::init(capacity));
+        // let level_idx = self.compactors.len() + 1;
+        // let capacity = KLL::compactor_capacity(level_idx as i32, self.k);
+        self.compactors.push(Vector1D::init(self.k));
     }
 
     /// ensure the level-th compactor exists
@@ -173,8 +173,7 @@ impl KLL {
     fn compact_from_level(&mut self, start_level: usize) {
         let mut level = start_level;
         while level < self.compactors.len() {
-            // let capacity = self.capacity(level);
-            let capacity = KLL::compactor_capacity(level as i32, self.k);
+            let capacity = KLL::compactor_capacity((self.compactors.len() - 1 - level) as i32, self.k);
             if self.compactors[level].len() > capacity {
                 self.compact_level(level);
             }
@@ -272,7 +271,8 @@ impl KLL {
             return cdf;
         }
 
-        cdf.entries.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap());
+        cdf.entries
+            .sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap());
 
         let mut cur_w = 0.0;
         for entry in cdf.entries.iter_mut() {
@@ -441,47 +441,48 @@ mod tests {
         (sketch, values)
     }
 
-fn quantile_from_sorted(data: &[f64], quantile: f64) -> f64 {
-    assert!(!data.is_empty(), "data set must not be empty");
-    if quantile <= 0.0 {
-        return data[0];
+    fn quantile_from_sorted(data: &[f64], quantile: f64) -> f64 {
+        assert!(!data.is_empty(), "data set must not be empty");
+        if quantile <= 0.0 {
+            return data[0];
+        }
+        if quantile >= 1.0 {
+            return data[data.len() - 1];
+        }
+        let n = data.len();
+        let idx = ((quantile * n as f64).ceil() as isize - 1).clamp(0, (n - 1) as isize) as usize;
+        data[idx]
     }
-    if quantile >= 1.0 {
-        return data[data.len() - 1];
-    }
-    let n = data.len();
-    let idx = ((quantile * n as f64).ceil() as isize - 1).clamp(0, (n - 1) as isize) as usize;
-    data[idx]
-}
 
-fn assert_quantiles_within_error(
-    sketch: &KLL,
-    sorted_truth: &[f64],
-    quantiles: &[(f64, &str)],
-    tolerance: f64,
-) {
-    // println!("sorted truth: {:?}", sorted_truth);
-    let cdf = sketch.cdf();
-    for &(quantile, label) in quantiles {
-        // let truth = quantile_from_sorted(sorted_truth, quantile);
-        let truth_min = quantile_from_sorted(sorted_truth, quantile-tolerance);
-        let truth_max = quantile_from_sorted(sorted_truth, quantile+tolerance);
-        let estimate = cdf.query(quantile);
-        // assert!(
-        //     rank_error <= tolerance,
-        //     "{label} exceeded tolerance: truth={truth:.4},
-        //         estimate={estimate:.4}, rank_error={rank_error:.4}, 
-        //         total_length={}",
-        //     sorted_truth.len()
-        // );
-        assert!((truth_min..=truth_max).contains(&estimate),
-        "{label} exceeded tolerance: truth_min={truth_min:.4}, truth_max={truth_max:.4},
+    fn assert_quantiles_within_error(
+        sketch: &KLL,
+        sorted_truth: &[f64],
+        quantiles: &[(f64, &str)],
+        tolerance: f64,
+    ) {
+        // println!("sorted truth: {:?}", sorted_truth);
+        let cdf = sketch.cdf();
+        for &(quantile, label) in quantiles {
+            // let truth = quantile_from_sorted(sorted_truth, quantile);
+            let truth_min = quantile_from_sorted(sorted_truth, quantile - tolerance);
+            let truth_max = quantile_from_sorted(sorted_truth, quantile + tolerance);
+            let estimate = cdf.query(quantile);
+            // assert!(
+            //     rank_error <= tolerance,
+            //     "{label} exceeded tolerance: truth={truth:.4},
+            //         estimate={estimate:.4}, rank_error={rank_error:.4},
+            //         total_length={}",
+            //     sorted_truth.len()
+            // );
+            assert!(
+                (truth_min..=truth_max).contains(&estimate),
+                "{label} exceeded tolerance: truth_min={truth_min:.4}, truth_max={truth_max:.4},
                 estimate={estimate:.4}, tolerance={tolerance:.4}, quantile={quantile:.2}, 
                 total_length={}",
-            sorted_truth.len()
-    );
+                sorted_truth.len()
+            );
+        }
     }
-}
 
     #[test]
     fn uniform_distribution_quantiles_within_five_percent() {
