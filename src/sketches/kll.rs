@@ -29,12 +29,59 @@ fn sketch_input_to_f64(input: &SketchInput) -> Result<f64, &'static str> {
     }
 }
 
-/// Coin to ensure that the coin toss is consistent
-/// across multiple flip
+/// Coin generates deterministic pseudo-random coin flips while amortizing
+/// calls to the RNG by consuming one bit at a time from a 64-bit buffer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Coin {
-    st: u64,
-    mask: u64,
+    state: u64,
+    bit_cache: u64,
+    #[serde(default)]
+    remaining_bits: u8,
+}
+
+impl Coin {
+    pub fn new() -> Self {
+        let mut rng = rng();
+        Self::from_seed(rng.random::<u64>())
+    }
+
+    pub fn xorshift_mult64(mut x: u64) -> u64 {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        x.wrapping_mul(2685821657736338717)
+    }
+
+    fn from_seed(seed: u64) -> Self {
+        Self {
+            state: Self::normalize_seed(seed),
+            bit_cache: 0,
+            remaining_bits: 0,
+        }
+    }
+
+    #[inline]
+    fn normalize_seed(seed: u64) -> u64 {
+        const FALLBACK: u64 = 0x9e37_79b9_7f4a_7c15;
+        if seed == 0 { FALLBACK } else { seed }
+    }
+
+    #[inline]
+    fn refill(&mut self) {
+        self.state = Self::normalize_seed(Self::xorshift_mult64(self.state));
+        self.bit_cache = self.state;
+        self.remaining_bits = u64::BITS as u8;
+    }
+
+    pub fn toss(&mut self) -> bool {
+        if self.remaining_bits == 0 {
+            self.refill();
+        }
+        let bit = (self.bit_cache & 1) != 0;
+        self.bit_cache >>= 1;
+        self.remaining_bits -= 1;
+        bit
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,33 +101,6 @@ pub struct KLL {
     k: usize,
     total_count: usize,
     co: Coin,
-}
-
-impl Coin {
-    pub fn new() -> Self {
-        let mut rng = rng();
-        Coin {
-            st: rng.random::<u64>(),
-            mask: 0,
-        }
-    }
-
-    pub fn xorshift_mult64(mut x: u64) -> u64 {
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        x.wrapping_mul(2685821657736338717)
-    }
-
-    pub fn toss(&mut self) -> i32 {
-        if self.mask == 0 {
-            self.st = Coin::xorshift_mult64(self.st);
-            self.mask = 1;
-        }
-        let v = if self.st & self.mask > 0 { 1 } else { 0 };
-        self.mask <<= 1;
-        v
-    }
 }
 
 impl Default for KLL {
@@ -185,7 +205,7 @@ impl KLL {
         }
         current.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        let keep = self.co.toss() as usize & 1;
+        let keep = usize::from(self.co.toss());
         let next = &mut right[0];
 
         for (idx, &value) in current.iter().enumerate() {
@@ -283,11 +303,9 @@ impl CDF {
             return 0.0;
         }
         let slice = self.quantile_list.as_slice();
-        match slice.binary_search_by(|e| {
-            e.value
-                .partial_cmp(&x)
-                .unwrap_or(std::cmp::Ordering::Less)
-        }) {
+        match slice
+            .binary_search_by(|e| e.value.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Less))
+        {
             Ok(idx) => slice[idx].quantile,
             Err(0) => 0.0,
             Err(idx) => slice[idx - 1].quantile,
@@ -356,6 +374,38 @@ impl CDF {
 mod tests {
     use super::*;
     use crate::test_utils::{sample_uniform_f64, sample_zipf_f64};
+
+    // Ensure each 64-bit chunk is consumed bit-by-bit before refilling.
+    #[test]
+    fn coin_bit_cache_behavior() {
+        let seed = 0x0123_4567_89ab_cdef;
+        let mut coin = Coin::from_seed(seed);
+        let mut expected_state = Coin::normalize_seed(seed);
+
+        for block in 0..3 {
+            expected_state = Coin::normalize_seed(Coin::xorshift_mult64(expected_state));
+            for bit in 0..64 {
+                let expected = ((expected_state >> bit) & 1) != 0;
+                assert_eq!(
+                    coin.toss(),
+                    expected,
+                    "mismatch at block {block}, bit {bit}"
+                );
+            }
+        }
+    }
+
+    // Zero seeds must map to a valid state and never fall back to zero.
+    #[test]
+    fn coin_state_never_zero() {
+        let mut coin = Coin::from_seed(0);
+        assert_ne!(coin.state, 0);
+
+        for _ in 0..128 {
+            coin.toss();
+            assert_ne!(coin.state, 0);
+        }
+    }
 
     #[derive(Clone, Copy)]
     enum TestDistribution {
