@@ -1,13 +1,15 @@
 use crate::common::structures::Vector1D;
+use serde::{Deserialize, Serialize};
+use rmp_serde::{from_slice, to_vec_named};
 
 // DDsketch implementation based on the paper and algorithms provided:
 // https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Buckets {
     counts: Vector1D<u64>,
     offset: i32, // offset for the indexing of counts - vectors don't support negative indices
-} 
+}
 
 // Buckets created using vec![] for counts and 0 for offset
 impl Buckets {
@@ -17,7 +19,6 @@ impl Buckets {
             offset: 0,
         }
     }
-
 
     // Get the current range of bucket indices stored.
     fn range(&self) -> Option<(i32, i32)> {
@@ -30,7 +31,7 @@ impl Buckets {
         }
     }
 
-    //checking to see if bucket for k exists, if not grow the counts vector accordingly
+    // checking to see if bucket for k exists, if not grow the counts vector accordingly
     fn ensure(&mut self, k: i32) {
         if self.counts.is_empty() {
             self.counts = Vector1D::from_vec(vec![0u64]);
@@ -67,11 +68,11 @@ impl Buckets {
             .as_slice()
             .iter()
             .enumerate()
-            .filter(|(_, c)| **c > 0)        // skip zero counts
+            .filter(|(_, c)| **c > 0) // skip zero counts
             .map(move |(i, c)| (self.offset + i as i32, *c))
     }
 
-    //merge another Buckets into this one
+    // merge another Buckets into this one
     fn merge(&mut self, other: &Buckets) {
         if other.counts.is_empty() {
             return;
@@ -107,7 +108,7 @@ impl Buckets {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DDSketch {
     alpha: f64,
     gamma: f64,
@@ -134,6 +135,16 @@ impl DDSketch {
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
         }
+    }
+
+    // serialize sketch into bytes using MessagePack format.
+    pub fn serialize(&self) -> Option<Vec<u8>> {
+        to_vec_named(self).ok()
+    }
+
+    // deserialize sketch from bytes using MessagePack format.
+    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
+        from_slice(bytes).ok()
     }
 
     /// Add a sample.
@@ -185,7 +196,6 @@ impl DDSketch {
         }
         Some(self.max)
     }
-
 
     pub fn get_count(&self) -> u64 {
         self.count
@@ -240,7 +250,7 @@ impl DDSketch {
         self.store.merge(&other.store);
     }
 
-    // mapping value to bin key 
+    // mapping value to bin key
     fn key_for(&self, v: f64) -> i32 {
         debug_assert!(v > 0.0);
         (v.ln() / self.log_gamma).floor() as i32
@@ -255,7 +265,9 @@ impl DDSketch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{sample_uniform_f64, sample_zipf_f64, sample_normal_f64, sample_exponential_f64};
+    use crate::test_utils::{
+        sample_exponential_f64, sample_normal_f64, sample_uniform_f64, sample_zipf_f64,
+    };
 
     // Absolute relative error helper
     fn rel_err(a: f64, b: f64) -> f64 {
@@ -319,27 +331,40 @@ mod tests {
         const ALPHA: f64 = 0.01;
 
         const QUANTILES: &[(f64, &str)] = &[
-            (0.0,  "min"),
+            (0.0, "min"),
             (0.10, "p10"),
             (0.25, "p25"),
             (0.50, "p50"),
             (0.75, "p75"),
             (0.90, "p90"),
-            (1.0,  "max"),
+            (1.0, "max"),
         ];
 
-        fn build_dds_with_uniform(alpha: f64, n: usize, min: f64, max: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+        fn build_dds_with_uniform(
+            alpha: f64,
+            n: usize,
+            min: f64,
+            max: f64,
+            seed: u64,
+        ) -> (DDSketch, Vec<f64>) {
             // sample uniform values from test utils
             let mut vals = sample_uniform_f64(min, max, n, seed);
             // retain only finite positive values
             vals.retain(|v| v.is_finite() && *v > 0.0);
             // build DDSketch
             let mut sk = DDSketch::new(alpha);
-            for &x in &vals { sk.add(x); }
+            for &x in &vals {
+                sk.add(x);
+            }
             (sk, vals)
         }
 
-        fn assert_quantiles_within_error_dds(sk: &DDSketch, sorted_vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+        fn assert_quantiles_within_error_dds(
+            sk: &DDSketch,
+            sorted_vals: &[f64],
+            qs: &[(f64, &str)],
+            tol: f64,
+        ) {
             for &(p, name) in qs {
                 let got = sk.get_value_at_quantile(p).expect("quantile");
                 let want = true_quantile(sorted_vals, p);
@@ -347,14 +372,23 @@ mod tests {
                 assert!(
                     err <= tol,
                     "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
-                    name, p, err, got, want, tol
+                    name,
+                    p,
+                    err,
+                    got,
+                    want,
+                    tol
                 );
             }
         }
 
-        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize]
+            .into_iter()
+            .enumerate()
+        {
             let seed = 0xA5A5_0000_u64 + idx as u64;
-            let (sketch, mut values) = build_dds_with_uniform(ALPHA, n, 1_000_000.0, 10_000_000.0, seed);
+            let (sketch, mut values) =
+                build_dds_with_uniform(ALPHA, n, 1_000_000.0, 10_000_000.0, seed);
             values.sort_by(|a, b| a.partial_cmp(b).unwrap());
             assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, ALPHA);
         }
@@ -365,16 +399,24 @@ mod tests {
         const ALPHA: f64 = 0.01;
 
         const QUANTILES: &[(f64, &str)] = &[
-            (0.0,  "min"),
+            (0.0, "min"),
             (0.10, "p10"),
             (0.25, "p25"),
             (0.50, "p50"),
             (0.75, "p75"),
             (0.90, "p90"),
-            (1.0,  "max"),
+            (1.0, "max"),
         ];
 
-        fn build_dds_with_zipf(alpha: f64, n: usize, min: f64, max: f64, domain: usize, exponent: f64, seed: u64,) -> (DDSketch, Vec<f64>) {
+        fn build_dds_with_zipf(
+            alpha: f64,
+            n: usize,
+            min: f64,
+            max: f64,
+            domain: usize,
+            exponent: f64,
+            seed: u64,
+        ) -> (DDSketch, Vec<f64>) {
             let mut vals = sample_zipf_f64(min, max, domain, exponent, n, seed);
             vals.retain(|v| v.is_finite() && *v > 0.0);
             let mut sk = DDSketch::new(alpha);
@@ -384,7 +426,12 @@ mod tests {
             (sk, vals)
         }
 
-        fn assert_quantiles_within_error_dds(sk: &DDSketch, sorted_vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+        fn assert_quantiles_within_error_dds(
+            sk: &DDSketch,
+            sorted_vals: &[f64],
+            qs: &[(f64, &str)],
+            tol: f64,
+        ) {
             for &(p, name) in qs {
                 let got = sk.get_value_at_quantile(p).expect("quantile");
                 let want = true_quantile(sorted_vals, p);
@@ -392,12 +439,20 @@ mod tests {
                 assert!(
                     err <= tol,
                     "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
-                    name, p, err, got, want, tol
+                    name,
+                    p,
+                    err,
+                    got,
+                    want,
+                    tol
                 );
             }
         }
 
-        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize]
+            .into_iter()
+            .enumerate()
+        {
             let seed = 0xB4B4_0000_u64 + idx as u64;
             let (sketch, mut values) =
                 build_dds_with_zipf(ALPHA, n, 1_000_000.0, 10_000_000.0, 8_192, 1.1, seed);
@@ -411,24 +466,32 @@ mod tests {
         const ALPHA: f64 = 0.01;
 
         const QUANTILES: &[(f64, &str)] = &[
-            (0.0,  "min"),
+            (0.0, "min"),
             (0.10, "p10"),
             (0.25, "p25"),
             (0.50, "p50"),
             (0.75, "p75"),
             (0.90, "p90"),
-            (1.0,  "max"),
+            (1.0, "max"),
         ];
 
-        fn build_dds_with_normal(alpha: f64, n: usize, mean: f64, std: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+        fn build_dds_with_normal(
+            alpha: f64,
+            n: usize,
+            mean: f64,
+            std: f64,
+            seed: u64,
+        ) -> (DDSketch, Vec<f64>) {
             // changed the code to include the normal distribution sampler from test_utils
             let vals = sample_normal_f64(mean, std, n, seed)
                 .into_iter()
-                .filter(|v| v.is_finite() && *v > 0.0) 
+                .filter(|v| v.is_finite() && *v > 0.0)
                 .collect::<Vec<_>>();
 
             let mut sk = DDSketch::new(alpha);
-            for &x in &vals { sk.add(x); }
+            for &x in &vals {
+                sk.add(x);
+            }
             (sk, vals)
         }
 
@@ -446,16 +509,24 @@ mod tests {
                 assert!(
                     err <= tol,
                     "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
-                    name, p, err, got, want, tol
+                    name,
+                    p,
+                    err,
+                    got,
+                    want,
+                    tol
                 );
             }
         }
 
         // Mean and std chosen so almost all samples are positive.
         let mean = 1_000.0;
-        let std  = 100.0;
+        let std = 100.0;
 
-        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize]
+            .into_iter()
+            .enumerate()
+        {
             let seed = 0xC0DE_0000_u64 + idx as u64;
             let (sketch, values) = build_dds_with_normal(ALPHA, n, mean, std, seed);
             assert_quantiles_within_error_dds(&sketch, values, QUANTILES, ALPHA);
@@ -476,28 +547,52 @@ mod tests {
             (1.0, "max"),
         ];
 
-        fn build_dds_with_exponential(alpha: f64, n: usize, lambda: f64, seed: u64) -> (DDSketch, Vec<f64>) {
+        fn build_dds_with_exponential(
+            alpha: f64,
+            n: usize,
+            lambda: f64,
+            seed: u64,
+        ) -> (DDSketch, Vec<f64>) {
             let vals = sample_exponential_f64(lambda, n, seed);
             let mut sk = DDSketch::new(alpha);
-            for &x in &vals { sk.add(x); }
+            for &x in &vals {
+                sk.add(x);
+            }
             (sk, vals)
         }
 
-        fn assert_quantiles_within_error_dds(sk: &DDSketch, vals: &[f64], qs: &[(f64, &str)], tol: f64) {
+        fn assert_quantiles_within_error_dds(
+            sk: &DDSketch,
+            vals: &[f64],
+            qs: &[(f64, &str)],
+            tol: f64,
+        ) {
             let mut sorted = vals.to_vec();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
             for &(p, name) in qs {
                 let got = sk.get_value_at_quantile(p).expect("quantile");
                 let want = true_quantile(&sorted, p);
                 let err = rel_err(got, want);
-                assert!(err <= tol + 1e-9, "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",name, p, err, got, want, tol);
+                assert!(
+                    err <= tol + 1e-9,
+                    "quantile {} (p={:.2}) relerr={:.4} got={} want={} tol={}",
+                    name,
+                    p,
+                    err,
+                    got,
+                    want,
+                    tol
+                );
             }
         }
 
-        for (idx, n) in [1_000usize, 5_000usize, 20_000usize].into_iter().enumerate() {
+        for (idx, n) in [1_000usize, 5_000usize, 20_000usize]
+            .into_iter()
+            .enumerate()
+        {
             let seed = 0xE3E3_0000_u64 + idx as u64;
             let (sketch, values) = build_dds_with_exponential(ALPHA, n, LAMBDA, seed);
-            assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, 0.011);// not sure why but needed a bit more tolerance
+            assert_quantiles_within_error_dds(&sketch, &values, QUANTILES, 0.011); // not sure why but needed a bit more tolerance
         }
     }
 
@@ -532,5 +627,32 @@ mod tests {
         // sanity: middle quantile is within [min, max]
         let mid = s1.get_value_at_quantile(0.5).unwrap();
         assert!(mid >= 1.0 && mid <= 20.0);
+    }
+
+    #[test]
+    fn dds_serialization_round_trip() {
+        let mut s = DDSketch::new(0.01);
+        let vals = [1.0, 2.0, 3.0, 10.0, 50.0, 100.0, 1000.0];// sample values
+
+        for v in vals {
+            s.add(v);
+        }
+
+        let encoded = s.serialize().expect("DDSketch serialization fail"); // serialize to bytes
+        assert!( !encoded.is_empty(),"encoded bytes should not be empty for DDSketch");
+
+        let decoded = DDSketch::deserialize(&encoded).expect("DDSketch deserialization fail"); // deserialize back
+
+        // basic invariants - conditions should match, else it fails
+        assert_eq!(decoded.get_count(), s.get_count()); // counts should match
+        assert_eq!(decoded.min(), s.min());// mins should match
+        assert_eq!(decoded.max(), s.max());// maxes should match
+
+        // quantiles should match at several points
+        for q in [0.0, 0.1, 0.5, 0.9, 1.0] {
+            let a = s.get_value_at_quantile(q).unwrap();
+            let b = decoded.get_value_at_quantile(q).unwrap();
+            assert_eq!(a, b, "quantile mismatch at p={}", q);
+        }
     }
 }
