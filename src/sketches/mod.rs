@@ -7,7 +7,7 @@ pub use count::Count;
 pub use count::CountL2HH;
 
 pub mod countmin;
-pub use countmin::{CountMin, CountMinGS};
+pub use countmin::CountMin;
 // pub use countmin::MicroScopeCM;
 
 pub mod elastic;
