@@ -1,6 +1,6 @@
 use crate::common::structures::Vector1D;
-use serde::{Deserialize, Serialize};
 use rmp_serde::{from_slice, to_vec_named};
+use serde::{Deserialize, Serialize};
 
 // DDsketch implementation based on the paper and algorithms provided:
 // https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
@@ -632,21 +632,24 @@ mod tests {
     #[test]
     fn dds_serialization_round_trip() {
         let mut s = DDSketch::new(0.01);
-        let vals = [1.0, 2.0, 3.0, 10.0, 50.0, 100.0, 1000.0];// sample values
+        let vals = [1.0, 2.0, 3.0, 10.0, 50.0, 100.0, 1000.0]; // sample values
 
         for v in vals {
             s.add(v);
         }
 
         let encoded = s.serialize().expect("DDSketch serialization fail"); // serialize to bytes
-        assert!( !encoded.is_empty(),"encoded bytes should not be empty for DDSketch");
+        assert!(
+            !encoded.is_empty(),
+            "encoded bytes should not be empty for DDSketch"
+        );
 
         let decoded = DDSketch::deserialize(&encoded).expect("DDSketch deserialization fail"); // deserialize back
 
         // basic invariants - conditions should match, else it fails
         assert_eq!(decoded.get_count(), s.get_count()); // counts should match
-        assert_eq!(decoded.min(), s.min());// mins should match
-        assert_eq!(decoded.max(), s.max());// maxes should match
+        assert_eq!(decoded.min(), s.min()); // mins should match
+        assert_eq!(decoded.max(), s.max()); // maxes should match
 
         // quantiles should match at several points
         for q in [0.0, 0.1, 0.5, 0.9, 1.0] {
