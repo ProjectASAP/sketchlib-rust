@@ -3,7 +3,8 @@
 //! Vector2D:
 //! Vector3D:
 //! CommonHeap:
-
+use rand::rngs::ThreadRng;
+use rand::{Rng, rng};
 /// Helper trait for converting sketch counter types to f64 for median calculation.
 pub trait ToF64 {
     fn to_f64(self) -> f64;
@@ -30,6 +31,69 @@ impl ToF64 for u32 {
 impl ToF64 for i32 {
     fn to_f64(self) -> f64 {
         self as f64
+    }
+}
+
+/// Structure to hold data for Nitro Mode
+/// Default to be off (i.e., not Nitro Mode)
+pub struct Nitro {
+    pub is_nitro_mode: bool,
+    sampling_rate: f64,
+    pub to_skip: usize,
+    generator: ThreadRng,
+}
+
+impl Default for Nitro {
+    fn default() -> Self {
+        Self {
+            is_nitro_mode: false,
+            sampling_rate: 0.0,
+            to_skip: 0,
+            generator: rng(), // no used, just to satisfy the type requirement
+        }
+    }
+}
+
+impl Nitro {
+    pub fn init_nitro(rate: f64) -> Self {
+        assert!(
+            !rate.is_nan() && rate > 0.0 && rate <= 1.0,
+            "sample_rate must be within (0.0, 1.0]"
+        );
+        Self {
+            is_nitro_mode: true,
+            sampling_rate: rate,
+            to_skip: 0,
+            generator: rng(),
+        }
+    }
+
+    pub fn draw_geometric(&mut self) {
+        let k = loop {
+            let r = self.generator.random::<f64>();
+            if r != 0.0_f64 && r != 1.0_f64 {
+                break r;
+            }
+        };
+        self.to_skip = ((1.0 - k).ln() / (1.0 - self.sampling_rate).ln()).ceil() as usize;
+    }
+
+    pub fn get_sampling_rate(&self) -> f64 {
+        self.sampling_rate
+    }
+
+    #[inline]
+    pub fn scaled_increment(&self, weight: u64) -> u64 {
+        if self.is_full_sampling() {
+            weight
+        } else {
+            ((weight as f64) / self.sampling_rate).ceil() as u64
+        }
+    }
+
+    #[inline]
+    fn is_full_sampling(&self) -> bool {
+        (self.sampling_rate - 1.0).abs() <= f64::EPSILON
     }
 }
 

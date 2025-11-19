@@ -15,3 +15,4 @@ pub use precompute_hash::PRECOMPUTED_HASH;
 pub use structures::{
     CommonHeap, CommonHeapOrder, CommonMaxHeap, CommonMinHeap, Vector1D, Vector2D, Vector3D,
 };
+pub use structure_utils::Nitro;
