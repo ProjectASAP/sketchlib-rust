@@ -211,7 +211,7 @@ impl CountMinGS {
             until_next: 0,
             // packet_until_next: 0,
             generator: rng(),
-            delta: 0
+            delta: 0,
         };
         cm.delta = cm.scaled_increment(1);
         cm
@@ -578,11 +578,13 @@ mod tests {
 
         sketch.packet_nitro_insert(&key);
 
-        assert!(sketch
-            .as_storage()
-            .as_slice()
-            .iter()
-            .all(|&counter| counter == 0));
+        assert!(
+            sketch
+                .as_storage()
+                .as_slice()
+                .iter()
+                .all(|&counter| counter == 0)
+        );
         // assert_eq!(sketch.packet_until_next, 1);
         assert_eq!(sketch.until_next, 1);
     }

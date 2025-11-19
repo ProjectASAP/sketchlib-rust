@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
+
+use crate::Nitro;
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vector2D<T> {
     data: Vec<T>,
     rows: usize,
     cols: usize,
     mask_bits: u32,
     mask: u128,
+    nitro: Nitro,
 }
 
 impl<T> Vector2D<T> {
@@ -25,6 +28,7 @@ impl<T> Vector2D<T> {
             cols,
             mask_bits,
             mask,
+            nitro: Nitro::default(),
         }
     }
 
@@ -51,6 +55,7 @@ impl<T> Vector2D<T> {
             cols,
             mask_bits,
             mask,
+            nitro: Nitro::default(),
         }
     }
 

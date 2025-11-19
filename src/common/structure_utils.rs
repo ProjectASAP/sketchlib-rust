@@ -3,8 +3,9 @@
 //! Vector2D:
 //! Vector3D:
 //! CommonHeap:
-use rand::rngs::ThreadRng;
-use rand::{Rng, rng};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng, rng};
+use serde::{Deserialize, Serialize};
 /// Helper trait for converting sketch counter types to f64 for median calculation.
 pub trait ToF64 {
     fn to_f64(self) -> f64;
@@ -36,11 +37,19 @@ impl ToF64 for i32 {
 
 /// Structure to hold data for Nitro Mode
 /// Default to be off (i.e., not Nitro Mode)
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Nitro {
     pub is_nitro_mode: bool,
     sampling_rate: f64,
     pub to_skip: usize,
-    generator: ThreadRng,
+    #[serde(skip)]
+    #[serde(default = "new_small_rng")]
+    generator: SmallRng,
+}
+
+fn new_small_rng() -> SmallRng {
+    let mut seed_rng = rng();
+    SmallRng::from_rng(&mut seed_rng)
 }
 
 impl Default for Nitro {
@@ -49,7 +58,7 @@ impl Default for Nitro {
             is_nitro_mode: false,
             sampling_rate: 0.0,
             to_skip: 0,
-            generator: rng(), // no used, just to satisfy the type requirement
+            generator: new_small_rng(), // not used unless Nitro mode is enabled
         }
     }
 }
@@ -64,7 +73,7 @@ impl Nitro {
             is_nitro_mode: true,
             sampling_rate: rate,
             to_skip: 0,
-            generator: rng(),
+            generator: new_small_rng(),
         }
     }
 
