@@ -82,6 +82,10 @@ impl<T> Vector2D<T> {
         &self.nitro
     }
 
+    pub fn get_delta(&self) -> u64 {
+        self.nitro.delta
+    }
+
     /// Returns a mutable Nitro configuration reference.
     pub fn nitro_mut(&mut self) -> &mut Nitro {
         &mut self.nitro

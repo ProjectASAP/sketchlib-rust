@@ -35,6 +35,8 @@ impl ToF64 for i32 {
     }
 }
 
+/// DPDK member sketch implementation. Reference:
+/// <https://github.com/DPDK/dpdk/blob/main/lib/member/rte_member_sketch.c>.
 /// Structure to hold data for Nitro Mode
 /// Default to be off (i.e., not Nitro Mode)
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,6 +49,7 @@ pub struct Nitro {
     #[serde(skip)]
     #[serde(default = "new_small_rng")]
     generator: SmallRng,
+    pub delta: u64,
 }
 
 fn new_small_rng() -> SmallRng {
@@ -62,6 +65,7 @@ impl Default for Nitro {
             to_skip: 0,
             inv_ln_one_minus_p: 0.0, // not used unless Nitro mode is enabled
             generator: new_small_rng(), // not used unless Nitro mode is enabled
+            delta: 0,
         }
     }
 }
@@ -77,13 +81,16 @@ impl Nitro {
         } else {
             1.0 / (1.0 - rate).ln()
         };
-        Self {
+        let mut nitro = Self {
             is_nitro_mode: true,
             sampling_rate: rate,
             to_skip: 0,
             inv_ln_one_minus_p: inv_ln,
             generator: new_small_rng(),
-        }
+            delta: 0,
+        };
+        nitro.delta = nitro.scaled_increment(1);
+        nitro
     }
 
     pub fn draw_geometric(&mut self) {
