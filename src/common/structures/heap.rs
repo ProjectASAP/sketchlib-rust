@@ -15,7 +15,7 @@ pub trait CommonHeapOrder<T> {
 }
 
 /// Min-heap ordering: smaller values have higher priority (bubble up).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommonMinHeap;
 
 impl<T: Ord> CommonHeapOrder<T> for CommonMinHeap {

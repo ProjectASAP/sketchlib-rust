@@ -3,7 +3,9 @@
 //! Vector2D:
 //! Vector3D:
 //! CommonHeap:
-
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng, rng};
+use serde::{Deserialize, Serialize};
 /// Helper trait for converting sketch counter types to f64 for median calculation.
 pub trait ToF64 {
     fn to_f64(self) -> f64;
@@ -30,6 +32,105 @@ impl ToF64 for u32 {
 impl ToF64 for i32 {
     fn to_f64(self) -> f64 {
         self as f64
+    }
+}
+
+/// DPDK member sketch implementation. Reference:
+/// <https://github.com/DPDK/dpdk/blob/main/lib/member/rte_member_sketch.c>.
+/// Structure to hold data for Nitro Mode
+/// Default to be off (i.e., not Nitro Mode)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Nitro {
+    pub is_nitro_mode: bool,
+    sampling_rate: f64,
+    pub to_skip: usize,
+    /// Precomputed: 1.0 / ln(1 - sampling_rate) for geometric sampling
+    inv_ln_one_minus_p: f64,
+    #[serde(skip)]
+    #[serde(default = "new_small_rng")]
+    generator: SmallRng,
+    pub delta: u64,
+}
+
+fn new_small_rng() -> SmallRng {
+    let mut seed_rng = rng();
+    SmallRng::from_rng(&mut seed_rng)
+}
+
+impl Default for Nitro {
+    fn default() -> Self {
+        Self {
+            is_nitro_mode: false,
+            sampling_rate: 0.0,
+            to_skip: 0,
+            inv_ln_one_minus_p: 0.0, // not used unless Nitro mode is enabled
+            generator: new_small_rng(), // not used unless Nitro mode is enabled
+            delta: 0,
+        }
+    }
+}
+
+impl Nitro {
+    pub fn init_nitro(rate: f64) -> Self {
+        assert!(
+            !rate.is_nan() && rate > 0.0 && rate <= 1.0,
+            "sample_rate must be within (0.0, 1.0]"
+        );
+        let inv_ln = if (rate - 1.0).abs() <= f64::EPSILON {
+            0.0 // Not used for full sampling
+        } else {
+            1.0 / (1.0 - rate).ln()
+        };
+        let mut nitro = Self {
+            is_nitro_mode: true,
+            sampling_rate: rate,
+            to_skip: 0,
+            inv_ln_one_minus_p: inv_ln,
+            generator: new_small_rng(),
+            delta: 0,
+        };
+        nitro.delta = nitro.scaled_increment(1);
+        nitro
+    }
+
+    pub fn draw_geometric(&mut self) {
+        if self.is_full_sampling() {
+            self.to_skip = 0;
+            return;
+        }
+        let k = loop {
+            let r = self.generator.random::<f64>();
+            if r != 0.0_f64 && r != 1.0_f64 {
+                break r;
+            }
+        };
+        self.to_skip = ((1.0 - k).ln() * self.inv_ln_one_minus_p).ceil() as usize;
+    }
+
+    #[inline(always)]
+    pub fn reduce_to_skip(&mut self) {
+        self.to_skip -= 1;
+    }
+
+    #[inline(always)]
+    pub fn get_sampling_rate(&self) -> f64 {
+        self.sampling_rate
+    }
+
+    // #[inline]
+    #[inline(always)]
+    pub fn scaled_increment(&self, weight: u64) -> u64 {
+        if self.is_full_sampling() {
+            weight
+        } else {
+            ((weight as f64) / self.sampling_rate).ceil() as u64
+        }
+    }
+
+    // #[inline]
+    #[inline(always)]
+    fn is_full_sampling(&self) -> bool {
+        (self.sampling_rate - 1.0).abs() <= f64::EPSILON
     }
 }
 

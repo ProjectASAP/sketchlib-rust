@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vector3D<T> {
     data: Vec<T>,
     layer: usize,
