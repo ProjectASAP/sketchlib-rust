@@ -107,15 +107,18 @@ impl Nitro {
         self.to_skip = ((1.0 - k).ln() * self.inv_ln_one_minus_p).ceil() as usize;
     }
 
+    #[inline(always)]
     pub fn reduce_to_skip(&mut self) {
         self.to_skip -= 1;
     }
 
+    #[inline(always)]
     pub fn get_sampling_rate(&self) -> f64 {
         self.sampling_rate
     }
 
-    #[inline]
+    // #[inline]
+    #[inline(always)]
     pub fn scaled_increment(&self, weight: u64) -> u64 {
         if self.is_full_sampling() {
             weight
@@ -124,7 +127,8 @@ impl Nitro {
         }
     }
 
-    #[inline]
+    // #[inline]
+    #[inline(always)]
     fn is_full_sampling(&self) -> bool {
         (self.sampling_rate - 1.0).abs() <= f64::EPSILON
     }

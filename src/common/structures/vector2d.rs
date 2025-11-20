@@ -73,20 +73,24 @@ impl<T> Vector2D<T> {
         self.nitro = Nitro::default();
     }
 
+    #[inline(always)]
     pub fn reduce_to_skip(&mut self) {
         self.nitro.reduce_to_skip();
     }
 
     /// Returns the Nitro configuration.
+    #[inline(always)]
     pub fn nitro(&self) -> &Nitro {
         &self.nitro
     }
 
+    #[inline(always)]
     pub fn get_delta(&self) -> u64 {
         self.nitro.delta
     }
 
     /// Returns a mutable Nitro configuration reference.
+    #[inline(always)]
     pub fn nitro_mut(&mut self) -> &mut Nitro {
         &mut self.nitro
     }

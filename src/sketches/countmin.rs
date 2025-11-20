@@ -88,6 +88,7 @@ impl CountMin {
     }
 
     /// Inserts an observation using Nitro-aware sampling logic.
+    #[inline(always)]
     pub fn fast_insert_nitro(&mut self, value: &SketchInput) {
         if self.counts.nitro().to_skip > 0 {
             self.counts.reduce_to_skip();
@@ -98,12 +99,23 @@ impl CountMin {
     }
 
     /// Inserts an observation using Nitro-aware sampling logic with a pre-computed hash value.
+    #[inline(always)]
     pub fn fast_insert_nitro_with_hash_value(&mut self, hashed_val: u128) {
         // let delta = self.nitro_scaled_delta();
         let delta = self.counts.get_delta();
         self.counts
-            .fast_insert_nitro(|a, b, _| *a += b, delta, hashed_val);
+            .fast_insert(|a, b, _| *a += b, delta, hashed_val);
+        self.counts.nitro_mut().draw_geometric();
     }
+
+    // /// Inserts an observation using Nitro-aware sampling logic with a pre-computed hash value.
+    // #[inline(always)]
+    // pub fn fast_insert_nitro_with_hash_value(&mut self, hashed_val: u128) {
+    //     // let delta = self.nitro_scaled_delta();
+    //     let delta = self.counts.get_delta();
+    //     self.counts
+    //         .fast_insert_nitro(|a, b, _| *a += b, delta, hashed_val);
+    // }
 
     /// Returns the frequency estimate for the provided value.
     pub fn estimate(&self, value: &SketchInput) -> u64 {
@@ -192,12 +204,11 @@ impl CountMin {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SketchInput;
     use crate::test_utils::sample_zipf_u64;
-    use crate::{SketchInput};
     use std::collections::HashMap;
 
     fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
