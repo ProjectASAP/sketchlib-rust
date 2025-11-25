@@ -206,13 +206,13 @@ impl CountL2HH {
     pub fn with_dimensions_and_seed(rows: usize, cols: usize, seed_idx: usize) -> Self {
         let mut sk = CountL2HH {
             counts: Vector2D::init(rows, cols),
-            l2: Vector1D::init(rows),
+            l2: Vector1D::filled(rows, 0),
             row: rows,
             col: cols,
             seed_idx,
         };
         sk.counts.fill(0);
-        sk.l2.fill(0);
+        // sk.l2.fill(rows, 0);
         sk
     }
 
