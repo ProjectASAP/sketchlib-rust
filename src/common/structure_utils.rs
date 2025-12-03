@@ -93,6 +93,8 @@ impl Nitro {
         nitro
     }
 
+    // for profiling
+    #[inline(never)]
     pub fn draw_geometric(&mut self) {
         if self.is_full_sampling() {
             self.to_skip = 0;

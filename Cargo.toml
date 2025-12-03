@@ -54,3 +54,17 @@ harness = false
 [[bench]]
 name = "nitro"
 harness = false
+
+[[bench]]
+name = "row_access"
+harness = false
+
+[[bench]]
+name = "box_vec"
+harness = false
+
+[profile.release]
+debug = true
+strip = false
+frame-pointer = "can-use"
+lto = false

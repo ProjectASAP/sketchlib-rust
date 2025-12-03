@@ -5,3 +5,4 @@ slideaway
 .DS_Store
 target
 querysimulation/.vscode
+profile.json.gz

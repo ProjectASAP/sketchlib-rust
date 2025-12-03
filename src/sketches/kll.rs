@@ -178,7 +178,7 @@ impl KLL {
         loop {
             let level_idx = self.num_levels - 1 - h;
             let cap = self.capacity_for_level(h);
-            
+
             let size = self.level_size(h);
 
             if size <= cap {
@@ -203,7 +203,7 @@ impl KLL {
         let idx = height_from_top.min(CAPACITY_CACHE_LEN - 1);
         self.capacity_cache[idx] as usize
     }
-    
+
     fn rebuild_capacity_cache(&mut self) {
         self.top_height = self.num_levels.saturating_sub(1);
         let mut scale = 1.0_f64;
@@ -392,12 +392,10 @@ impl KLL {
 
     /// Deserialize a sketch from MessagePack bytes.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        rmp_serde::from_slice(bytes)
-            .ok()
-            .map(|mut sketch: KLL| {
-                sketch.rebuild_capacity_cache();
-                sketch
-            })
+        rmp_serde::from_slice(bytes).ok().map(|mut sketch: KLL| {
+            sketch.rebuild_capacity_cache();
+            sketch
+        })
     }
 }
 
