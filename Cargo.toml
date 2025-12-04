@@ -25,6 +25,9 @@ anyhow = "1.0.99"
 twox-hash = "2.1.2"
 bincode = {version = "2.0.1", features = ["serde"]}
 prom_text_format_parser = "0.1.0"
+rand_distr = "0.4"
+pcap = "1.1" 
+clap = { version = "4.0", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.5"
