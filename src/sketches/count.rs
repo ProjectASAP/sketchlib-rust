@@ -69,10 +69,9 @@ impl Count {
     pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
         self.counts.fast_insert(
             |counter, value, row| {
-                let sign_bit_pos = 127 - row;
-                let bit = ((hashed_val >> sign_bit_pos) & 1) as i64;
-                let sign_bit = -(1 - 2 * bit);
-                *counter += sign_bit * *value;
+                let bit = (hashed_val >> (127 - row)) & 1;
+                let sign = (bit << 1) as i64 - 1;
+                *counter += sign * *value;
             },
             1_i64,
             hashed_val,

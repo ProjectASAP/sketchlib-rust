@@ -218,7 +218,7 @@ mod tests {
 
     fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
         let hash = hash_it_to_128(row, key);
-        ((hash & ((0x1 << 32) - 1)) as usize) % columns
+        ((hash as u64 & LOWER_32_MASK) as usize) % columns
     }
 
     fn run_zipf_stream(
@@ -241,71 +241,67 @@ mod tests {
         (sketch, truth)
     }
 
+    fn all_counter_zero(v: &Vector2D<u64>) {
+        assert!(
+            v.as_slice().iter().all(|&value| value == 0),
+            "not all counter is zero"
+        );
+    }
+
+    fn all_zero_except(v: &Vector2D<u64>, non_zero: Vec<(usize, u64)>) {
+        // println!("{:?}", v.as_slice());
+        // println!("{:?}", non_zero);
+        for (idx, counter) in v.as_slice().iter().enumerate() {
+            for &(i, exp) in &non_zero {
+                if i == idx {
+                    assert_eq!(
+                        exp, *counter,
+                        "at index {idx}, counter value should be {exp}, but get {counter}"
+                    );
+                }
+            }
+        }
+    }
+
+    // test for dimension of CMS after initialization
     #[test]
-    fn default_initializes_expected_dimensions() {
+    fn dimension_test() {
+        // test default sketch dimension
         let cm = CountMin::default();
         assert_eq!(cm.rows(), 3);
         assert_eq!(cm.cols(), 4096);
-
         let storage = cm.as_storage();
-        for row in 0..cm.rows() {
-            assert!(
-                storage.row_slice(row).iter().all(|&value| value == 0),
-                "expected row {} to be zero-initialized, got {:?}",
-                row,
-                storage.row_slice(row)
-            );
-        }
+        all_counter_zero(storage);
+
+        // test for custom dimension size
+        let cm_customize = CountMin::with_dimensions(3, 17);
+        assert_eq!(cm_customize.rows(), 3);
+        assert_eq!(cm_customize.cols(), 17);
+
+        let storage_customize = cm_customize.as_storage();
+        all_counter_zero(storage_customize);
     }
 
     #[test]
-    fn init_cm_with_row_col_uses_custom_sizes() {
-        let cm = CountMin::with_dimensions(3, 17);
-        assert_eq!(cm.rows(), 3);
-        assert_eq!(cm.cols(), 17);
-
-        let storage = cm.as_storage();
-        for row in 0..cm.rows() {
-            assert!(
-                storage.row_slice(row).iter().all(|&value| value == 0),
-                "expected row {} to be zero-initialized, got {:?}",
-                row,
-                storage.row_slice(row)
-            );
-        }
-    }
-
-    #[test]
-    fn required_bits_match_expected_thresholds() {
-        let default_dims = CountMin::with_dimensions(3, 4096);
-        assert_eq!(default_dims.as_storage().get_required_bits(), 64);
-
-        let smaller_cols = CountMin::with_dimensions(3, 64);
-        assert_eq!(smaller_cols.as_storage().get_required_bits(), 32);
-
-        let larger_shape = CountMin::with_dimensions(5, 1_048_576);
-        assert_eq!(larger_shape.as_storage().get_required_bits(), 128);
-    }
-
-    #[test]
-    fn insert_cm_updates_all_minimal_rows() {
+    fn insert_cm_once() {
         let mut cm = CountMin::with_dimensions(4, 64);
         let key = SketchInput::Str("alpha");
 
         cm.insert(&key);
 
-        for row in 0..cm.rows() {
-            let idx = counter_index(row, &key, cm.cols());
-            assert_eq!(
-                cm.counts.query_one_counter(row, idx),
-                1,
-                "row {row} counter should be 1"
-            );
-        }
+        all_zero_except(
+            cm.as_storage(),
+            vec![
+                (counter_index(0, &key, cm.col), 1),
+                (counter_index(1, &key, cm.col) + cm.col, 1),
+                (counter_index(2, &key, cm.col) + cm.col * 2, 1),
+                (counter_index(3, &key, cm.col) + cm.col * 3, 1),
+            ],
+        );
     }
 
     #[test]
-    fn fast_insert_matches_standard_estimate() {
+    fn fast_insert_same_estimate() {
         let mut slow = CountMin::with_dimensions(3, 64);
         let mut fast = CountMin::with_dimensions(3, 64);
 

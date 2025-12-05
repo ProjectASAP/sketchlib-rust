@@ -676,3 +676,23 @@ impl<T> IndexMut<usize> for Vector2D<T> {
         self.row_slice_mut(index)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // placeholder, potentially useful
+    #[test]
+    fn required_bits_match_expected_thresholds() {
+        let default_dims: Vector2D<u64> = Vector2D::init(3, 4096);
+        assert_eq!(default_dims.get_required_bits(), 64);
+
+        let smaller_cols: Vector2D<u64> = Vector2D::init(3, 64);
+        assert_eq!(smaller_cols.get_required_bits(), 32);
+
+        let larger_shape: Vector2D<u64> = Vector2D::init(5, 1_048_576);
+        assert_eq!(larger_shape.get_required_bits(), 128);
+    }
+
+    // add test for median operation
+}
