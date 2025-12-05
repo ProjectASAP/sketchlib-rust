@@ -1,12 +1,12 @@
 use ahash::RandomState;
 use clap::Parser;
 use pcap::Capture;
+use sketchlib_rust::Nitro;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::{self, Write}; // 引入 Write trait 用于 flush stdout
 use std::path::PathBuf;
 use std::time::Instant;
-use sketchlib_rust::Nitro;
 
 // To compile: $ RUSTFLAGS="-C target-cpu=native" cargo build --release --example nitro_bench
 // To run: $ sudo ./target/release/examples/nitro_bench ~/data/*.pcap
@@ -16,9 +16,8 @@ use sketchlib_rust::Nitro;
 // ==========================================
 const MAX_PKTS: usize = 100_000_000;
 const HASH_SEEDS: [u64; 10] = [
-    0x9b6b9076, 0x7c2b3e89, 0x1d4a0f32, 0x5a8f2c1e, 
-    0x3f1d9e2b, 0x8a7c6b5d, 0x2e9f1a4c, 0x6b5d8a7c, 
-    0x4c3b2e1f, 0x0f1e2d3c
+    0x9b6b9076, 0x7c2b3e89, 0x1d4a0f32, 0x5a8f2c1e, 0x3f1d9e2b, 0x8a7c6b5d, 0x2e9f1a4c, 0x6b5d8a7c,
+    0x4c3b2e1f, 0x0f1e2d3c,
 ];
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,7 +29,7 @@ struct HeapEntry {
 struct NitroSketch {
     rows: usize,
     cols: usize,
-    table: Vec<u64>, 
+    table: Vec<u64>,
     seeds: Vec<u64>,
     top_k: usize,
     heap: Vec<HeapEntry>,
@@ -42,13 +41,20 @@ struct NitroSketch {
 impl NitroSketch {
     pub fn new(rows: usize, cols: usize, top_k: usize, sample_rate: f64) -> Self {
         let mut seeds = Vec::new();
-        for i in 0..rows { seeds.push(HASH_SEEDS[i % HASH_SEEDS.len()] + (i as u64 * 100)); }
+        for i in 0..rows {
+            seeds.push(HASH_SEEDS[i % HASH_SEEDS.len()] + (i as u64 * 100));
+        }
         let nitro = Nitro::init_nitro(sample_rate);
         Self {
-            rows, cols, table: vec![0; rows * cols], seeds, top_k,
+            rows,
+            cols,
+            table: vec![0; rows * cols],
+            seeds,
+            top_k,
             heap: Vec::with_capacity(top_k),
             key_to_idx: HashMap::with_hasher(RandomState::new()),
-            nitro, hasher_builder: RandomState::new(),
+            nitro,
+            hasher_builder: RandomState::new(),
         }
     }
 
@@ -67,7 +73,9 @@ impl NitroSketch {
         loop {
             self.sketch_update_row(key, self.nitro.delta, cur_row);
             self.nitro.draw_geometric();
-            if cur_row + self.nitro.to_skip + 1 >= self.rows { break; }
+            if cur_row + self.nitro.to_skip + 1 >= self.rows {
+                break;
+            }
             cur_row += self.nitro.to_skip + 1;
         }
         self.nitro.to_skip = (cur_row + self.nitro.to_skip + 1) - self.rows;
@@ -76,7 +84,9 @@ impl NitroSketch {
 
     #[inline(always)]
     fn sketch_update(&mut self, key: u32, count: u64) {
-        for r in 0..self.rows { self.sketch_update_row(key, count, r); }
+        for r in 0..self.rows {
+            self.sketch_update_row(key, count, r);
+        }
     }
 
     #[inline(always)]
@@ -87,7 +97,9 @@ impl NitroSketch {
         seed.hash(&mut hasher);
         let hash_val = hasher.finish();
         let col = (hash_val as usize) % self.cols;
-        unsafe { *self.table.get_unchecked_mut(row_idx * self.cols + col) += count; }
+        unsafe {
+            *self.table.get_unchecked_mut(row_idx * self.cols + col) += count;
+        }
     }
 
     #[inline(always)]
@@ -101,7 +113,9 @@ impl NitroSketch {
             let hash_val = hasher.finish();
             let col = (hash_val as usize) % self.cols;
             let val = unsafe { *self.table.get_unchecked(r * self.cols + col) };
-            if val < min_cnt { min_cnt = val; }
+            if val < min_cnt {
+                min_cnt = val;
+            }
         }
         min_cnt
     }
@@ -116,13 +130,19 @@ impl NitroSketch {
             let est_count = self.query_sketch(key);
             if self.heap.len() < self.top_k {
                 let idx = self.heap.len();
-                self.heap.push(HeapEntry { key, count: est_count });
+                self.heap.push(HeapEntry {
+                    key,
+                    count: est_count,
+                });
                 self.key_to_idx.insert(key, idx);
                 self.sift_up(idx);
             } else if est_count > self.heap[0].count {
                 let old_key = self.heap[0].key;
                 self.key_to_idx.remove(&old_key);
-                self.heap[0] = HeapEntry { key, count: est_count };
+                self.heap[0] = HeapEntry {
+                    key,
+                    count: est_count,
+                };
                 self.key_to_idx.insert(key, 0);
                 self.sift_down(0);
             }
@@ -135,12 +155,18 @@ impl NitroSketch {
             let left = 2 * node_idx + 1;
             let right = 2 * node_idx + 2;
             let mut smallest = node_idx;
-            if left < len && self.heap[left].count < self.heap[smallest].count { smallest = left; }
-            if right < len && self.heap[right].count < self.heap[smallest].count { smallest = right; }
+            if left < len && self.heap[left].count < self.heap[smallest].count {
+                smallest = left;
+            }
+            if right < len && self.heap[right].count < self.heap[smallest].count {
+                smallest = right;
+            }
             if smallest != node_idx {
                 self.swap(node_idx, smallest);
                 node_idx = smallest;
-            } else { break; }
+            } else {
+                break;
+            }
         }
     }
 
@@ -150,7 +176,9 @@ impl NitroSketch {
             if self.heap[node_idx].count < self.heap[parent].count {
                 self.swap(node_idx, parent);
                 node_idx = parent;
-            } else { break; }
+            } else {
+                break;
+            }
         }
     }
 
@@ -177,9 +205,9 @@ struct Args {
 
 fn run_test(name: &str, sample_rate: f64, keys: &[u32]) {
     println!("--- Test: {} (Sample Rate: {:.4}) ---", name, sample_rate);
-    
+
     let rows = 5;
-    let cols = 2048; 
+    let cols = 2048;
     let top_k = 512;
 
     let mut sketch = NitroSketch::new(rows, cols, top_k, sample_rate);
@@ -194,7 +222,10 @@ fn run_test(name: &str, sample_rate: f64, keys: &[u32]) {
 
     println!("Processed: {} packets", count);
     println!("Time:      {:.6} s", secs);
-    println!("Throughput: {:.2} Mops/sec", (count as f64 / secs) / 1_000_000.0);
+    println!(
+        "Throughput: {:.2} Mops/sec",
+        (count as f64 / secs) / 1_000_000.0
+    );
     println!();
 }
 
@@ -203,7 +234,7 @@ fn main() {
 
     println!("Allocating memory for up to {} packets...", MAX_PKTS);
     let mut keys = Vec::with_capacity(MAX_PKTS);
-    
+
     // Iterate over all provided files
     for file_path in args.files {
         // C-style print: "Reading X ... " (no newline yet)
@@ -220,8 +251,10 @@ fn main() {
 
         let mut file_count = 0;
         while let Ok(packet) = cap.next_packet() {
-            if keys.len() >= MAX_PKTS { break; }
-            
+            if keys.len() >= MAX_PKTS {
+                break;
+            }
+
             // Check IP offset (26) validity
             if packet.header.len >= 30 && packet.data.len() >= 30 {
                 let dst_ip_bytes = &packet.data[26..30];
@@ -230,18 +263,20 @@ fn main() {
                 file_count += 1;
             }
         }
-        
+
         // Finish the line: "Added X packets."
         println!("Added {} packets.", file_count);
 
-        if keys.len() >= MAX_PKTS { 
+        if keys.len() >= MAX_PKTS {
             println!("Reached MAX_PKTS limit.");
-            break; 
+            break;
         }
     }
 
     println!("\nTotal Loaded: {} packets.\n", keys.len());
-    if keys.is_empty() { return; }
+    if keys.is_empty() {
+        return;
+    }
 
     run_test("Full Sampling (1.0)", 1.0, &keys);
     run_test("Nitro Sampling (0.01)", 0.01, &keys);

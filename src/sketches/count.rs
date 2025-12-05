@@ -111,7 +111,7 @@ impl Count {
             let sign_bit_pos = 127 - row;
             let bit = ((hash >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
-            sign_bit * (*val)
+            (sign_bit * (*val)) as f64
         })
     }
 
@@ -121,7 +121,7 @@ impl Count {
             let sign_bit_pos = 127 - row;
             let bit = ((hash >> sign_bit_pos) & 1) as i64;
             let sign_bit = -(1 - 2 * bit);
-            sign_bit * (*val)
+            (sign_bit * (*val)) as f64
         })
     }
 

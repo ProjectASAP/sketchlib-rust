@@ -258,11 +258,11 @@ impl<T> Vector2D<T> {
     }
 
     #[inline(always)]
-    pub fn update_by_row<F, V>(&mut self, row: usize, hashed: u128, op: F, value: V) 
-        where
+    pub fn update_by_row<F, V>(&mut self, row: usize, hashed: u128, op: F, value: V)
+    where
         F: Fn(&mut T, V),
         T: Clone,
-        {
+    {
         let idx = (hashed >> (self.mask_bits as usize * row)) as usize & (self.mask as usize);
         // op(&mut self.data[self.cols * row + idx], value);
         self.update_one_counter(row, idx, op, value);
@@ -356,7 +356,7 @@ impl<T> Vector2D<T> {
     #[inline(always)]
     pub fn fast_query_median<F>(&self, hashed_val: u128, op: F) -> f64
     where
-        F: Fn(&T, usize, u128) -> i64,
+        F: Fn(&T, usize, u128) -> f64,
     {
         let mask_bits = self.mask_bits;
         let mask = self.mask;
@@ -500,7 +500,7 @@ impl<T> Vector2D<T> {
     #[inline(always)]
     pub fn fast_query_median_with_key<F, Q>(&self, hashed_val: u128, query_key: &Q, op: F) -> f64
     where
-        F: Fn(&T, &Q, usize, u128) -> i64,
+        F: Fn(&T, &Q, usize, u128) -> f64,
     {
         let mask_bits = self.mask_bits;
         let mask = self.mask;
@@ -518,16 +518,110 @@ impl<T> Vector2D<T> {
     /// Compute median from a mutable slice of f64 values (inline helper)
     /// This is used by query_median_with_custom_hash for HydraCounter queries
     #[inline(always)]
-    fn compute_median_inline_f64(&self, values: &mut [i64]) -> f64 {
-        if values.is_empty() {
-            return 0.0;
-        }
-        values.sort_unstable();
-        let mid = values.len() / 2;
-        if values.len() % 2 == 1 {
-            values[mid] as f64
-        } else {
-            (values[mid - 1] + values[mid]) as f64 / 2.0
+    fn compute_median_inline_f64(&self, values: &mut [f64]) -> f64 {
+        match values.len() {
+            0 => 0.0,
+            1 => values[0],
+            2 => (values[0] + values[1]) / 2.0,
+            // starting here is an assumption that LLVM and compiler
+            // will load var into register and perform simple register swap
+            // no heavy sort or memory swap
+            3 => {
+                let (mut v0, mut v1, v2) = (values[0], values[1], values[2]);
+                // ensure v0 is smaller than v1
+                if v0 > v1 {
+                    let t = v0;
+                    v0 = v1;
+                    v1 = t;
+                }
+                // ensure v1 is smaller than v2, and ignore the actual v2 value
+                if v1 > v2 {
+                    v1 = v2;
+                }
+                // ensure v1 is still greater than v0
+                if v0 > v1 {
+                    v1 = v0;
+                }
+                v1
+            }
+            4 => {
+                let (mut v0, mut v1, mut v2, mut v3) = (values[0], values[1], values[2], values[3]);
+                // ensure the order of v0 and v1
+                if v0 > v1 {
+                    let t = v0;
+                    v0 = v1;
+                    v1 = t;
+                }
+                // ensure the order of v2 and v3
+                if v2 > v3 {
+                    let t = v2;
+                    v2 = v3;
+                    v3 = t;
+                }
+                // the smaller of v0 and v2 will be smaller than v1 anyway
+                // ignore the smaller one, which will be min (dropped)
+                if v0 > v2 {
+                    v2 = v0;
+                }
+                // the greater of v1 and v3 will be greater than v2 anyway
+                // ignore the greeater one, which will be max (dropped)
+                if v1 > v3 {
+                    v1 = v3;
+                }
+                (v1 + v2) / 2.0
+            }
+            5 => {
+                let (mut v0, mut v1, mut v2, mut v3, mut v4) =
+                    (values[0], values[1], values[2], values[3], values[4]);
+                // ensure the order of v0 and v1
+                if v0 > v1 {
+                    let t = v0;
+                    v0 = v1;
+                    v1 = t;
+                }
+                // ensure the order of v3 and v4
+                if v3 > v4 {
+                    let t = v3;
+                    v3 = v4;
+                    v4 = t;
+                }
+                // the smaller of v0 v3 will be smaller than v1 v4 and the other
+                // smaller than 3 value, so not median of 5
+                if v0 > v3 {
+                    v3 = v0;
+                }
+                // the greater of v1 v4 will be greater than v0 v3 and the other
+                // greater than 3 value, so not median of 5
+                if v1 > v4 {
+                    v1 = v4;
+                }
+                // median of 5 is reduced to median of v1 v2 v3
+                // v0 and v4 will not change the order
+                // v0 will be one of the two smallest
+                // v4 will be one of the two greatest
+                // safely ignored
+                if v1 > v2 {
+                    let t = v1;
+                    v1 = v2;
+                    v2 = t;
+                }
+                if v2 > v3 {
+                    v2 = v3;
+                }
+                if v1 > v2 {
+                    v2 = v1;
+                }
+                v2
+            }
+            _ => {
+                values.sort_unstable_by(f64::total_cmp);
+                let mid = values.len() / 2;
+                if values.len() % 2 == 1 {
+                    values[mid]
+                } else {
+                    (values[mid - 1] + values[mid]) / 2.0
+                }
+            }
         }
     }
 

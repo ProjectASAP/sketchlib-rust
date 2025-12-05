@@ -66,6 +66,10 @@ harness = false
 name = "box_vec"
 harness = false
 
+[[bench]]
+name = "median_bench"
+harness = false
+
 [profile.release]
 debug = true
 strip = false
