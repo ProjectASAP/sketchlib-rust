@@ -213,13 +213,8 @@ impl CountMin {
 mod tests {
     use super::*;
     use crate::SketchInput;
-    use crate::test_utils::{sample_zipf_u64, all_counter_zero, all_zero_except};
+    use crate::test_utils::{all_counter_zero, all_zero_except, counter_index, sample_zipf_u64};
     use std::collections::HashMap;
-
-    fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
-        let hash = hash_it_to_128(row, key);
-        ((hash as u64 & LOWER_32_MASK) as usize) % columns
-    }
 
     fn run_zipf_stream(
         rows: usize,
@@ -241,28 +236,6 @@ mod tests {
         (sketch, truth)
     }
 
-    // fn all_counter_zero(v: &Vector2D<u64>) {
-    //     assert!(
-    //         v.as_slice().iter().all(|&value| value == 0),
-    //         "not all counter is zero"
-    //     );
-    // }
-
-    // fn all_zero_except(v: &Vector2D<u64>, non_zero: Vec<(usize, u64)>) {
-    //     // println!("{:?}", v.as_slice());
-    //     // println!("{:?}", non_zero);
-    //     for (idx, counter) in v.as_slice().iter().enumerate() {
-    //         for &(i, exp) in &non_zero {
-    //             if i == idx {
-    //                 assert_eq!(
-    //                     exp, *counter,
-    //                     "at index {idx}, counter value should be {exp}, but get {counter}"
-    //                 );
-    //             }
-    //         }
-    //     }
-    // }
-
     // test for dimension of CMS after initialization
     #[test]
     fn dimension_test() {
@@ -280,24 +253,6 @@ mod tests {
 
         let storage_customize = cm_customize.as_storage();
         all_counter_zero(storage_customize);
-    }
-
-    #[test]
-    fn insert_cm_once() {
-        let mut cm = CountMin::with_dimensions(4, 64);
-        let key = SketchInput::Str("alpha");
-
-        cm.insert(&key);
-
-        all_zero_except(
-            cm.as_storage(),
-            vec![
-                (counter_index(0, &key, cm.col), 1),
-                (counter_index(1, &key, cm.col) + cm.col, 1),
-                (counter_index(2, &key, cm.col) + cm.col * 2, 1),
-                (counter_index(3, &key, cm.col) + cm.col * 3, 1),
-            ],
-        );
     }
 
     #[test]
@@ -337,8 +292,8 @@ mod tests {
         right.insert(&key);
         right.insert(&key);
 
-        let left_indices: Vec<_> = (0..left.rows())
-            .map(|row| counter_index(row, &key, left.cols()))
+        let left_indices: Vec<_> = (0..left.row)
+            .map(|row| counter_index(row, &key, left.col))
             .collect();
 
         left.merge(&right);
@@ -354,6 +309,921 @@ mod tests {
         let mut left = CountMin::with_dimensions(2, 32);
         let right = CountMin::with_dimensions(3, 32);
         left.merge(&right);
+    }
+
+    // 0: AD840DF6E50083D93BF66518E6FF7E3D
+    // 1: 6E17A626B9D8F6F4573FA3775F50F1B9
+    // 2: 172A557358ABF80D6511148F7D5AA0F6
+    // end of 0
+    // 0: DD835708A07623292C138892AEB1F547
+    // 1: F9B0D7EF1C2ED935F5F989B41B09FD89
+    // 2: 7A0C88C68F4531C51BAC589557E8F18C
+    // end of 1
+    // 0: DD61C694F39B506F09D6B97F9CEBC585
+    // 1: 301ADA0437C870752BFB3D0D0B5DA30D
+    // 2: D21D14E3363A1092FFB15D675C083154
+    // end of 2
+    // 0: B5BEF3BF53A585FF1B2B5F62AAD24BED
+    // 1: 7D6CA4F84CB7D09C6D1784F7D218F5CB
+    // 2: CEFB01A00A53ABEC3BA981A6520EC1B8
+    // end of 3
+    // 0: 16D521D000A0D47C3F48F6337A57083F
+    // 1: A66ED8D7F3BF42C301D95F41A176676A
+    // 2: 37B2A6706E35FE54C157F0BB1C615FE6
+    // end of 4
+    // 0: 2BAE2A5230668C4AEADCEF720D5CED80
+    // 1: B14095E9638EC368F72C7C42E0F56DDE
+    // 2: 7FF0D70FE7F7724764106A10B7891FBC
+    // end of 5
+    // 0: 6C6614EE2E5470FBEF10E25F5699AC8B
+    // 1: 96D75ECE5AC8EC01D28D283523CC5645
+    // 2: 347E41D9E0FEE82CA99948EBF1EF4197
+    // end of 6
+    // 0: 6E47C6AF273700D4DF8A5CDAF096CEE8
+    // 1: E688315FBE5FCA36A23BB2AC87FD72C3
+    // 2: 218DCB5B3795D9F43769F64B6A145021
+    // end of 7
+    // 0: EB956D6716CF14B4CAE830DF0405ED5
+    // 1: 321A4D0D0F8AD2DB5957FA84B0F8D249
+    // 2: 6C931E49EA89960760D2E223598066DE
+    // end of 8
+    // 0: EA9B0E7B47192AB557372F968739F6CC
+    // 1: 3053BA71E31A27332644EBD80DB20C55
+    // 2: 3D95B11B7BD867ED20CE28729B869EC0
+    // end of 9
+    #[test]
+    fn cm_regular_path_correctness() {
+        let mut sk = CountMin::default();
+        // insert 0~9
+        for i in 0..10 {
+            sk.insert(&SketchInput::I32(i));
+        }
+        let data = sk.as_storage().as_slice();
+        // some counter is 1 now
+        assert_eq!(
+            data[0xE3D], 1,
+            "incorrect value {} for row 0 of insertion i32 0",
+            data[0xE3D]
+        );
+        assert_eq!(
+            data[0x1B9 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 0",
+            data[0x1B9 + sk.col]
+        );
+        assert_eq!(
+            data[0x0F6 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 0",
+            data[0x0F6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x547], 1,
+            "incorrect value {} for row 0 of insertion i32 1",
+            data[0x547]
+        );
+        assert_eq!(
+            data[0xD89 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 1",
+            data[0xD89 + sk.col]
+        );
+        assert_eq!(
+            data[0x18C + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 1",
+            data[0x18C + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x585], 1,
+            "incorrect value {} for row 0 of insertion i32 2",
+            data[0x585]
+        );
+        assert_eq!(
+            data[0x30D + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 2",
+            data[0x30D + sk.col]
+        );
+        assert_eq!(
+            data[0x154 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 2",
+            data[0x154 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xBED], 1,
+            "incorrect value {} for row 0 of insertion i32 3",
+            data[0xBED]
+        );
+        assert_eq!(
+            data[0x5CB + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 3",
+            data[0x5CB + sk.col]
+        );
+        assert_eq!(
+            data[0x1B8 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 3",
+            data[0x1B8 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x83F], 1,
+            "incorrect value {} for row 0 of insertion i32 4",
+            data[0x83F]
+        );
+        assert_eq!(
+            data[0x76A + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 4",
+            data[0x76A + sk.col]
+        );
+        assert_eq!(
+            data[0xFE6 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 4",
+            data[0xFE6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xD80], 1,
+            "incorrect value {} for row 0 of insertion i32 5",
+            data[0xD80]
+        );
+        assert_eq!(
+            data[0xDDE + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 5",
+            data[0xDDE + sk.col]
+        );
+        assert_eq!(
+            data[0xFBC + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 5",
+            data[0xFBC + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xC8B], 1,
+            "incorrect value {} for row 0 of insertion i32 6",
+            data[0xC8B]
+        );
+        assert_eq!(
+            data[0x645 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 6",
+            data[0x645 + sk.col]
+        );
+        assert_eq!(
+            data[0x197 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 6",
+            data[0x197 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xEE8], 1,
+            "incorrect value {} for row 0 of insertion i32 7",
+            data[0xEE8]
+        );
+        assert_eq!(
+            data[0x2C3 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 7",
+            data[0x2C3 + sk.col]
+        );
+        assert_eq!(
+            data[0x021 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 7",
+            data[0x021 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xED5], 1,
+            "incorrect value {} for row 0 of insertion i32 8",
+            data[0xED5]
+        );
+        assert_eq!(
+            data[0x249 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 8",
+            data[0x249 + sk.col]
+        );
+        assert_eq!(
+            data[0x6DE + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 8",
+            data[0x6DE + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x6CC], 1,
+            "incorrect value {} for row 0 of insertion i32 9",
+            data[0x6CC]
+        );
+        assert_eq!(
+            data[0xC55 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 9",
+            data[0xC55 + sk.col]
+        );
+        assert_eq!(
+            data[0xEC0 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 9",
+            data[0xEC0 + sk.col * 2]
+        );
+        // other remains zero
+        all_zero_except(
+            sk.as_storage(),
+            vec![
+                0xE3D,
+                0x1B9 + sk.col,
+                0x0F6 + sk.col * 2, // 0
+                0x547,
+                0xD89 + sk.col,
+                0x18C + sk.col * 2, // 1
+                0x585,
+                0x30D + sk.col,
+                0x154 + sk.col * 2, // 2
+                0xBED,
+                0x5CB + sk.col,
+                0x1B8 + sk.col * 2, // 3
+                0x83F,
+                0x76A + sk.col,
+                0xFE6 + sk.col * 2, // 4
+                0xD80,
+                0xDDE + sk.col,
+                0xFBC + sk.col * 2, // 5
+                0xC8B,
+                0x645 + sk.col,
+                0x197 + sk.col * 2, // 6
+                0xEE8,
+                0x2C3 + sk.col,
+                0x021 + sk.col * 2, // 7
+                0xED5,
+                0x249 + sk.col,
+                0x6DE + sk.col * 2, // 8
+                0x6CC,
+                0xC55 + sk.col,
+                0xEC0 + sk.col * 2, // 9
+            ],
+        );
+        for i in 0..10 {
+            sk.insert(&SketchInput::I32(i));
+        }
+        let data = sk.as_storage().as_slice();
+        // some counter is 2 now
+        assert_eq!(
+            data[0xE3D], 2,
+            "incorrect value {} for row 0 of insertion i32 0",
+            data[0xE3D]
+        );
+        assert_eq!(
+            data[0x1B9 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 0",
+            data[0x1B9 + sk.col]
+        );
+        assert_eq!(
+            data[0x0F6 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 0",
+            data[0x0F6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x547], 2,
+            "incorrect value {} for row 0 of insertion i32 1",
+            data[0x547]
+        );
+        assert_eq!(
+            data[0xD89 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 1",
+            data[0xD89 + sk.col]
+        );
+        assert_eq!(
+            data[0x18C + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 1",
+            data[0x18C + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x585], 2,
+            "incorrect value {} for row 0 of insertion i32 2",
+            data[0x585]
+        );
+        assert_eq!(
+            data[0x30D + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 2",
+            data[0x30D + sk.col]
+        );
+        assert_eq!(
+            data[0x154 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 2",
+            data[0x154 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xBED], 2,
+            "incorrect value {} for row 0 of insertion i32 3",
+            data[0xBED]
+        );
+        assert_eq!(
+            data[0x5CB + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 3",
+            data[0x5CB + sk.col]
+        );
+        assert_eq!(
+            data[0x1B8 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 3",
+            data[0x1B8 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x83F], 2,
+            "incorrect value {} for row 0 of insertion i32 4",
+            data[0x83F]
+        );
+        assert_eq!(
+            data[0x76A + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 4",
+            data[0x76A + sk.col]
+        );
+        assert_eq!(
+            data[0xFE6 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 4",
+            data[0xFE6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xD80], 2,
+            "incorrect value {} for row 0 of insertion i32 5",
+            data[0xD80]
+        );
+        assert_eq!(
+            data[0xDDE + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 5",
+            data[0xDDE + sk.col]
+        );
+        assert_eq!(
+            data[0xFBC + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 5",
+            data[0xFBC + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xC8B], 2,
+            "incorrect value {} for row 0 of insertion i32 6",
+            data[0xC8B]
+        );
+        assert_eq!(
+            data[0x645 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 6",
+            data[0x645 + sk.col]
+        );
+        assert_eq!(
+            data[0x197 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 6",
+            data[0x197 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xEE8], 2,
+            "incorrect value {} for row 0 of insertion i32 7",
+            data[0xEE8]
+        );
+        assert_eq!(
+            data[0x2C3 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 7",
+            data[0x2C3 + sk.col]
+        );
+        assert_eq!(
+            data[0x021 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 7",
+            data[0x021 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xED5], 2,
+            "incorrect value {} for row 0 of insertion i32 8",
+            data[0xED5]
+        );
+        assert_eq!(
+            data[0x249 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 8",
+            data[0x249 + sk.col]
+        );
+        assert_eq!(
+            data[0x6DE + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 8",
+            data[0x6DE + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x6CC], 2,
+            "incorrect value {} for row 0 of insertion i32 9",
+            data[0x6CC]
+        );
+        assert_eq!(
+            data[0xC55 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 9",
+            data[0xC55 + sk.col]
+        );
+        assert_eq!(
+            data[0xEC0 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 9",
+            data[0xEC0 + sk.col * 2]
+        );
+        // other remains zero
+        all_zero_except(
+            sk.as_storage(),
+            vec![
+                0xE3D,
+                0x1B9 + sk.col,
+                0x0F6 + sk.col * 2, // 0
+                0x547,
+                0xD89 + sk.col,
+                0x18C + sk.col * 2, // 1
+                0x585,
+                0x30D + sk.col,
+                0x154 + sk.col * 2, // 2
+                0xBED,
+                0x5CB + sk.col,
+                0x1B8 + sk.col * 2, // 3
+                0x83F,
+                0x76A + sk.col,
+                0xFE6 + sk.col * 2, // 4
+                0xD80,
+                0xDDE + sk.col,
+                0xFBC + sk.col * 2, // 5
+                0xC8B,
+                0x645 + sk.col,
+                0x197 + sk.col * 2, // 6
+                0xEE8,
+                0x2C3 + sk.col,
+                0x021 + sk.col * 2, // 7
+                0xED5,
+                0x249 + sk.col,
+                0x6DE + sk.col * 2, // 8
+                0x6CC,
+                0xC55 + sk.col,
+                0xEC0 + sk.col * 2, // 9
+            ],
+        );
+        // check estimate for 0~9 is 2
+        for i in 0..10 {
+            assert_eq!(
+                sk.estimate(&SketchInput::I32(i)),
+                2,
+                "estimate for {i} should be 2, but get {}",
+                sk.estimate(&SketchInput::I32(i))
+            )
+        }
+    }
+
+    #[test]
+    fn cm_fast_path_correctness() {
+        let mut sk = CountMin::default();
+        // insert 0~9
+        for i in 0..10 {
+            sk.fast_insert(&SketchInput::I32(i));
+        }
+        let data = sk.as_storage().as_slice();
+        // some counters are 1
+        assert_eq!(
+            data[0xE3D], 1,
+            "incorrect value {} for row 0 of insertion i32 0",
+            data[0xE3D]
+        );
+        assert_eq!(
+            data[0xFF7 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 0",
+            data[0xFF7 + sk.col]
+        );
+        assert_eq!(
+            data[0x8E6 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 0",
+            data[0x8E6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x547], 1,
+            "incorrect value {} for row 0 of insertion i32 1",
+            data[0x547]
+        );
+        assert_eq!(
+            data[0xB1F + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 1",
+            data[0xB1F + sk.col]
+        );
+        assert_eq!(
+            data[0x2AE + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 1",
+            data[0x2AE + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x585], 1,
+            "incorrect value {} for row 0 of insertion i32 2",
+            data[0x585]
+        );
+        assert_eq!(
+            data[0xEBC + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 2",
+            data[0xEBC + sk.col]
+        );
+        assert_eq!(
+            data[0xF9C + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 2",
+            data[0xF9C + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xBED], 1,
+            "incorrect value {} for row 0 of insertion i32 3",
+            data[0xBED]
+        );
+        assert_eq!(
+            data[0xD24 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 3",
+            data[0xD24 + sk.col]
+        );
+        assert_eq!(
+            data[0x2AA + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 3",
+            data[0x2AA + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x83F], 1,
+            "incorrect value {} for row 0 of insertion i32 4",
+            data[0x83F]
+        );
+        assert_eq!(
+            data[0x570 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 4",
+            data[0x570 + sk.col]
+        );
+        assert_eq!(
+            data[0x37A + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 4",
+            data[0x37A + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xD80], 1,
+            "incorrect value {} for row 0 of insertion i32 5",
+            data[0xD80]
+        );
+        assert_eq!(
+            data[0x5CE + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 5",
+            data[0x5CE + sk.col]
+        );
+        assert_eq!(
+            data[0x20D + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 5",
+            data[0x20D + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xC8B], 1,
+            "incorrect value {} for row 0 of insertion i32 6",
+            data[0xC8B]
+        );
+        assert_eq!(
+            data[0x99A + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 6",
+            data[0x99A + sk.col]
+        );
+        assert_eq!(
+            data[0xF56 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 6",
+            data[0xF56 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xEE8], 1,
+            "incorrect value {} for row 0 of insertion i32 7",
+            data[0xEE8]
+        );
+        assert_eq!(
+            data[0x96C + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 7",
+            data[0x96C + sk.col]
+        );
+        assert_eq!(
+            data[0xAF0 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 7",
+            data[0xAF0 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xED5], 1,
+            "incorrect value {} for row 0 of insertion i32 8",
+            data[0xED5]
+        );
+        assert_eq!(
+            data[0x405 + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 8",
+            data[0x405 + sk.col]
+        );
+        assert_eq!(
+            data[0xDF0 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 8",
+            data[0xDF0 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x6CC], 1,
+            "incorrect value {} for row 0 of insertion i32 9",
+            data[0x6CC]
+        );
+        assert_eq!(
+            data[0x39F + sk.col],
+            1,
+            "incorrect value {} for row 1 of insertion i32 9",
+            data[0x39F + sk.col]
+        );
+        assert_eq!(
+            data[0x687 + sk.col * 2],
+            1,
+            "incorrect value {} for row 2 of insertion i32 9",
+            data[0x687 + sk.col * 2]
+        );
+        // others are 0
+        all_zero_except(
+            sk.as_storage(),
+            vec![
+                0xE3D,
+                0xFF7 + sk.col,
+                0x8E6 + sk.col * 2,
+                0x547,
+                0xB1F + sk.col,
+                0x2AE + sk.col * 2,
+                0x585,
+                0xEBC + sk.col,
+                0xF9C + sk.col * 2,
+                0xBED,
+                0xD24 + sk.col,
+                0x2AA + sk.col * 2,
+                0x83F,
+                0x570 + sk.col,
+                0x37A + sk.col * 2,
+                0xD80,
+                0x5CE + sk.col,
+                0x20D + sk.col * 2,
+                0xC8B,
+                0x99A + sk.col,
+                0xF56 + sk.col * 2,
+                0xEE8,
+                0x96C + sk.col,
+                0xAF0 + sk.col * 2,
+                0xED5,
+                0x405 + sk.col,
+                0xDF0 + sk.col * 2,
+                0x6CC,
+                0x39F + sk.col,
+                0x687 + sk.col * 2,
+            ],
+        );
+        // insert 0~9 again
+        for i in 0..10 {
+            sk.fast_insert(&SketchInput::I32(i));
+        }
+        let data = sk.as_storage().as_slice();
+        // some counters are 2
+        assert_eq!(
+            data[0xE3D], 2,
+            "incorrect value {} for row 0 of insertion i32 0",
+            data[0xE3D]
+        );
+        assert_eq!(
+            data[0xFF7 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 0",
+            data[0xFF7 + sk.col]
+        );
+        assert_eq!(
+            data[0x8E6 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 0",
+            data[0x8E6 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x547], 2,
+            "incorrect value {} for row 0 of insertion i32 1",
+            data[0x547]
+        );
+        assert_eq!(
+            data[0xB1F + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 1",
+            data[0xB1F + sk.col]
+        );
+        assert_eq!(
+            data[0x2AE + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 1",
+            data[0x2AE + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x585], 2,
+            "incorrect value {} for row 0 of insertion i32 2",
+            data[0x585]
+        );
+        assert_eq!(
+            data[0xEBC + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 2",
+            data[0xEBC + sk.col]
+        );
+        assert_eq!(
+            data[0xF9C + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 2",
+            data[0xF9C + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xBED], 2,
+            "incorrect value {} for row 0 of insertion i32 3",
+            data[0xBED]
+        );
+        assert_eq!(
+            data[0xD24 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 3",
+            data[0xD24 + sk.col]
+        );
+        assert_eq!(
+            data[0x2AA + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 3",
+            data[0x2AA + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x83F], 2,
+            "incorrect value {} for row 0 of insertion i32 4",
+            data[0x83F]
+        );
+        assert_eq!(
+            data[0x570 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 4",
+            data[0x570 + sk.col]
+        );
+        assert_eq!(
+            data[0x37A + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 4",
+            data[0x37A + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xD80], 2,
+            "incorrect value {} for row 0 of insertion i32 5",
+            data[0xD80]
+        );
+        assert_eq!(
+            data[0x5CE + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 5",
+            data[0x5CE + sk.col]
+        );
+        assert_eq!(
+            data[0x20D + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 5",
+            data[0x20D + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xC8B], 2,
+            "incorrect value {} for row 0 of insertion i32 6",
+            data[0xC8B]
+        );
+        assert_eq!(
+            data[0x99A + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 6",
+            data[0x99A + sk.col]
+        );
+        assert_eq!(
+            data[0xF56 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 6",
+            data[0xF56 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xEE8], 2,
+            "incorrect value {} for row 0 of insertion i32 7",
+            data[0xEE8]
+        );
+        assert_eq!(
+            data[0x96C + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 7",
+            data[0x96C + sk.col]
+        );
+        assert_eq!(
+            data[0xAF0 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 7",
+            data[0xAF0 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0xED5], 2,
+            "incorrect value {} for row 0 of insertion i32 8",
+            data[0xED5]
+        );
+        assert_eq!(
+            data[0x405 + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 8",
+            data[0x405 + sk.col]
+        );
+        assert_eq!(
+            data[0xDF0 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 8",
+            data[0xDF0 + sk.col * 2]
+        );
+        assert_eq!(
+            data[0x6CC], 2,
+            "incorrect value {} for row 0 of insertion i32 9",
+            data[0x6CC]
+        );
+        assert_eq!(
+            data[0x39F + sk.col],
+            2,
+            "incorrect value {} for row 1 of insertion i32 9",
+            data[0x39F + sk.col]
+        );
+        assert_eq!(
+            data[0x687 + sk.col * 2],
+            2,
+            "incorrect value {} for row 2 of insertion i32 9",
+            data[0x687 + sk.col * 2]
+        );
+        // others are still 0
+        all_zero_except(
+            sk.as_storage(),
+            vec![
+                0xE3D,
+                0xFF7 + sk.col,
+                0x8E6 + sk.col * 2,
+                0x547,
+                0xB1F + sk.col,
+                0x2AE + sk.col * 2,
+                0x585,
+                0xEBC + sk.col,
+                0xF9C + sk.col * 2,
+                0xBED,
+                0xD24 + sk.col,
+                0x2AA + sk.col * 2,
+                0x83F,
+                0x570 + sk.col,
+                0x37A + sk.col * 2,
+                0xD80,
+                0x5CE + sk.col,
+                0x20D + sk.col * 2,
+                0xC8B,
+                0x99A + sk.col,
+                0xF56 + sk.col * 2,
+                0xEE8,
+                0x96C + sk.col,
+                0xAF0 + sk.col * 2,
+                0xED5,
+                0x405 + sk.col,
+                0xDF0 + sk.col * 2,
+                0x6CC,
+                0x39F + sk.col,
+                0x687 + sk.col * 2,
+            ],
+        );
+        // check estimate for 0~9 is 2
+        for i in 0..10 {
+            assert_eq!(
+                sk.fast_estimate(&SketchInput::I32(i)),
+                2,
+                "estimate for {i} should be 2, but get {}",
+                sk.fast_estimate(&SketchInput::I32(i))
+            )
+        }
     }
 
     #[test]
@@ -406,8 +1276,9 @@ mod tests {
 
         let encoded = sketch.serialize_to_bytes().expect("serialize CountMin");
         assert!(!encoded.is_empty());
+        let data_copied = encoded.clone();
 
-        let decoded = CountMin::deserialize_from_bytes(&encoded).expect("deserialize CountMin");
+        let decoded = CountMin::deserialize_from_bytes(&data_copied).expect("deserialize CountMin");
 
         assert_eq!(sketch.rows(), decoded.rows());
         assert_eq!(sketch.cols(), decoded.cols());

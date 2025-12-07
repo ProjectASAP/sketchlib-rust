@@ -5,7 +5,9 @@ use rand::SeedableRng;
 use rand::distr::{self, Distribution, Uniform};
 use rand::rngs::StdRng;
 
-use crate::Vector2D;
+use crate::{SketchInput, Vector2D, hash_it_to_128};
+
+const LOWER_32_MASK: u64 = (1u64 << 32) - 1;
 
 pub fn sample_uniform_f64(min: f64, max: f64, sample_size: usize, seed: u64) -> Vec<f64> {
     assert!(sample_size > 0, "sample size must be positive");
@@ -139,23 +141,44 @@ pub fn sample_exponential_f64(lambda: f64, sample_size: usize, seed: u64) -> Vec
 }
 
 pub fn all_counter_zero(v: &Vector2D<u64>) {
-        assert!(
-            v.as_slice().iter().all(|&value| value == 0),
-            "not all counter is zero"
-        );
-    }
+    assert!(
+        v.as_slice().iter().all(|&value| value == 0),
+        "not all counter is zero"
+    );
+}
 
-    pub fn all_zero_except(v: &Vector2D<u64>, non_zero: Vec<(usize, u64)>) {
-        // println!("{:?}", v.as_slice());
-        // println!("{:?}", non_zero);
-        for (idx, counter) in v.as_slice().iter().enumerate() {
-            for &(i, exp) in &non_zero {
-                if i == idx {
-                    assert_eq!(
-                        exp, *counter,
-                        "at index {idx}, counter value should be {exp}, but get {counter}"
-                    );
-                }
-            }
+pub fn all_zero_except(v: &Vector2D<u64>, non_zero: Vec<usize>) {
+    // println!("{:?}", v.as_slice());
+    // println!("{:?}", non_zero);
+    for (idx, counter) in v.as_slice().iter().enumerate() {
+        if non_zero.contains(&idx) {
+            assert_ne!(*counter, 0, "counter {idx} should not be 0");
+        } else {
+            assert_eq!(*counter, 0, "counter {idx} should be 0");
         }
     }
+}
+
+pub fn counter_equal<T>(v1: &Vector2D<T>, v2: &Vector2D<T>)
+where
+    T: PartialEq,
+{
+    assert_eq!(
+        v1.len(),
+        v2.len(),
+        "v1 length {} different from v2 length {}, cannot be equal",
+        v1.len(),
+        v2.len()
+    );
+    for (idx, counter) in v1.as_slice().iter().enumerate() {
+        assert!(
+            v2.as_slice()[idx] == *counter,
+            "Counter differs at idx {idx}"
+        );
+    }
+}
+
+pub fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
+    let hash = hash_it_to_128(row, key);
+    ((hash as u64 & LOWER_32_MASK) as usize) % columns
+}
