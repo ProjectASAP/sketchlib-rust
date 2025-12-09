@@ -1,4 +1,4 @@
-use crate::hash_it_to_128;
+use crate::hash_it_to_64;
 use crate::{LASTSTATE, SketchInput, Vector1D};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
@@ -32,13 +32,13 @@ impl HyperLogLog {
     }
 
     pub fn insert(&mut self, obj: &SketchInput) {
-        let hashed_val = hash_it_to_128(LASTSTATE, obj);
+        let hashed_val = hash_it_to_64(LASTSTATE, obj);
         self.insert_with_hash(hashed_val);
     }
 
     #[inline(always)]
-    pub fn insert_with_hash(&mut self, hashed: u128) {
-        let hashed_val = hashed as u64;
+    pub fn insert_with_hash(&mut self, hashed_val: u64) {
+        // let hashed_val = hashed as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
         self.registers.update_if_greater(bucket_num, leading_zero);
@@ -133,13 +133,13 @@ impl HllDf {
     }
 
     pub fn insert(&mut self, obj: &SketchInput) {
-        let hashed_val = hash_it_to_128(LASTSTATE, obj);
+        let hashed_val = hash_it_to_64(LASTSTATE, obj);
         self.insert_with_hash(hashed_val);
     }
 
     #[inline(always)]
-    pub fn insert_with_hash(&mut self, h: u128) {
-        let hashed_val = h as u64;
+    pub fn insert_with_hash(&mut self, hashed_val: u64) {
+        // let hashed_val = h as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
         self.registers.update_if_greater(bucket_num, leading_zero);
@@ -268,12 +268,12 @@ impl HllDs {
     /// "Back to the Future: an Even More Nearly Optimal Cardinality Estimation Algorithm"
     /// Kevin J. Lang, https://arxiv.org/pdf/1708.06839
     pub fn insert(&mut self, obj: &SketchInput) {
-        let hashed_val = hash_it_to_128(LASTSTATE, obj);
+        let hashed_val = hash_it_to_64(LASTSTATE, obj);
         self.insert_with_hash(hashed_val);
     }
 
     #[inline(always)]
-    pub fn insert_with_hash(&mut self, hashed: u128) {
+    pub fn insert_with_hash(&mut self, hashed: u64) {
         let hashed_val = hashed as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
@@ -336,7 +336,7 @@ mod tests {
 
     trait HllEstimator: Default {
         fn push(&mut self, input: &SketchInput);
-        fn insert_with_hash(&mut self, hashed: u128);
+        fn insert_with_hash(&mut self, hashed: u64);
         fn estimate(&self) -> f64;
         fn index(&self, i: usize) -> u8;
     }
@@ -357,7 +357,7 @@ mod tests {
             self.insert(input);
         }
 
-        fn insert_with_hash(&mut self, hashed: u128) {
+        fn insert_with_hash(&mut self, hashed: u64) {
             self.insert_with_hash(hashed);
         }
 
@@ -391,7 +391,7 @@ mod tests {
             self.insert(input);
         }
 
-        fn insert_with_hash(&mut self, hashed: u128) {
+        fn insert_with_hash(&mut self, hashed: u64) {
             self.insert_with_hash(hashed);
         }
         fn estimate(&self) -> f64 {
@@ -423,7 +423,7 @@ mod tests {
             self.insert(input);
         }
 
-        fn insert_with_hash(&mut self, hashed: u128) {
+        fn insert_with_hash(&mut self, hashed: u64) {
             self.insert_with_hash(hashed);
         }
 

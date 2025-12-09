@@ -26,7 +26,7 @@ impl AnySketch {
         match self {
             AnySketch::CountMin(sketch) => sketch.fast_insert_with_hash_value(hashed_val),
             AnySketch::Count(sketch) => sketch.fast_insert_with_hash_value(hashed_val),
-            AnySketch::HllDf(sketch) => sketch.insert_with_hash(hashed_val),
+            AnySketch::HllDf(sketch) => sketch.insert_with_hash(hashed_val as u64),
         }
     }
 
