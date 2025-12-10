@@ -61,7 +61,7 @@ impl<'a> UnivMon<'a> {
     }
 
     #[inline(always)]
-    pub fn find_bottom_layer_num(&self, hash: u64, layer: usize) -> usize {
+    fn find_bottom_layer_num(&self, hash: u64, layer: usize) -> usize {
         for l in 1..layer {
             if ((hash >> l) & 1) == 0 {
                 return l - 1;
@@ -70,7 +70,8 @@ impl<'a> UnivMon<'a> {
         layer - 1
     }
 
-    pub fn update(&mut self, key: &SketchInput<'a>, value: i64, bottom_layer_num: usize) {
+    #[inline(always)]
+    fn update(&mut self, key: &SketchInput<'a>, value: i64, bottom_layer_num: usize) {
         for i in 0..=bottom_layer_num {
             let count = if i == 0 {
                 self.l2_sketch_layers[i].update_and_est(key, value)
@@ -81,7 +82,8 @@ impl<'a> UnivMon<'a> {
         }
     }
 
-    pub fn process_univmon(&mut self, key: &SketchInput<'a>, value: i64, bottom_layer_num: usize) {
+    #[inline(always)]
+    fn process_univmon(&mut self, key: &SketchInput<'a>, value: i64, bottom_layer_num: usize) {
         self.bucket_size += value as usize;
         self.update(key, value, bottom_layer_num);
     }
@@ -90,6 +92,16 @@ impl<'a> UnivMon<'a> {
         let h = hash_it_to_64(BOTTOM_LAYER_FINDER, key);
         let bottom_layer_num = self.find_bottom_layer_num(h, self.layer_size);
         self.process_univmon(key, value, bottom_layer_num)
+    }
+
+    pub fn fast_insert(&mut self, key: &SketchInput<'a>, value: i64) {
+        self.bucket_size += value as usize;
+        let h = hash_it_to_64(BOTTOM_LAYER_FINDER, key);
+        let bottom_layer_num = self.find_bottom_layer_num(h, self.layer_size);
+        let count = self.l2_sketch_layers[bottom_layer_num].update_and_est(key, value);
+        for i in 0..=bottom_layer_num {
+            self.hh_layers[i].update(key, count as i64);
+        }
     }
 
     pub fn print_hh_layer(&self) {
