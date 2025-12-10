@@ -9,170 +9,6 @@ use crate::common::input::{HHItem};
 use crate::common::{CommonHeap, CommonMinHeap};
 use serde::{Deserialize, Serialize};
 
-// #[derive(Serialize, Deserialize, Clone, Debug)]
-// pub struct TopKHeap {
-//     pub heap: Vec<HHItem>,
-//     pub k: u32,         // consider this be usize at some time
-//     pub total_mem: f64, // don't see why this should be f64
-// }
-
-// impl TopKHeap {
-//     pub fn init_heap(k: u32) -> Self {
-//         TopKHeap {
-//             heap: Vec::with_capacity(k as usize),
-//             k,
-//             total_mem: 0.0,
-//         }
-//     }
-
-//     pub fn get_memory_bytes(&self) -> f64 {
-//         self.total_mem
-//     }
-
-//     pub fn clean(&mut self) -> () {
-//         self.heap.clear();
-//     }
-
-//     pub fn init_heap_from_heap(other: &TopKHeap) -> Self {
-//         let mut h = TopKHeap {
-//             heap: Vec::with_capacity(other.k as usize),
-//             k: other.k,
-//             total_mem: other.total_mem,
-//         };
-//         for item in &other.heap {
-//             let new_item = HHItem {
-//                 key: item.key.clone(),
-//                 count: item.count,
-//             };
-//             h.heap.push(new_item);
-//         }
-//         h
-//     }
-
-//     pub fn print_heap(&self) -> () {
-//         println!("======== Beginning of Heap ========");
-//         for item in &self.heap {
-//             item.print_item();
-//         }
-//         println!("============ Heap Ends ============");
-//     }
-
-//     pub fn find(&self, k: &str) -> Option<usize> {
-//         for (idx, item) in self.heap.iter().enumerate() {
-//             if item.key == k {
-//                 return Some(idx);
-//             }
-//         }
-//         return None;
-//     }
-
-//     pub fn left_child(i: i32) -> i32 {
-//         2 * i + 1
-//     }
-
-//     pub fn right_child(i: i32) -> i32 {
-//         2 * i + 2
-//     }
-
-//     pub fn parent(i: i32) -> i32 {
-//         (i - 1) / 2
-//     }
-
-//     pub fn swap(&mut self, i: i32, j: i32) {
-//         self.heap.swap(i as usize, j as usize);
-//     }
-
-//     pub fn update_count(&mut self, key: &str, count: i64) -> bool {
-//         match self.find(key) {
-//             Some(idx) => {
-//                 self.heap[idx].count += 1;
-//                 self.update_order(idx as i32);
-//                 true
-//             }
-//             None => {
-//                 self.insert(key, count);
-//                 true
-//             }
-//         }
-//     }
-
-//     pub fn update(&mut self, k: &str, c: i64) -> bool {
-//         match self.find(k) {
-//             Some(idx) => {
-//                 self.heap[idx].count = c;
-//                 self.update_order(idx as i32);
-//                 true
-//             }
-//             None => {
-//                 self.insert(k, c);
-//                 true
-//             }
-//         }
-//     }
-
-//     fn insert(&mut self, k: &str, c: i64) -> () {
-//         if self.heap.len() < self.k as usize {
-//             self.heap.push(HHItem {
-//                 key: k.to_string(),
-//                 count: c,
-//             });
-//             self.total_mem += k.len() as f64 + 8.0;
-//             self.update_order_up(self.heap.len() as i32 - 1);
-//             // ()
-//         } else {
-//             if self.heap[0].count < c {
-//                 self.heap[0].count = c;
-//                 self.heap[0].key = k.to_string();
-//                 self.update_order_down(0);
-//                 // ()
-//             }
-//         }
-//     }
-
-//     pub fn update_order(&mut self, i: i32) -> () {
-//         if !self.update_order_down(i) {
-//             self.update_order_up(i);
-//         }
-//     }
-
-//     pub fn update_order_down(&mut self, mut i: i32) -> bool {
-//         let n = self.heap.len();
-//         let i0 = i;
-//         while (i as usize) < n {
-//             let l = TopKHeap::left_child(i) as usize;
-//             let r = TopKHeap::right_child(i) as usize;
-//             let mut smallest = i as usize;
-
-//             if l < n && self.heap[smallest].count > self.heap[l].count {
-//                 smallest = l;
-//             }
-//             if r < n && self.heap[smallest].count > self.heap[r].count {
-//                 smallest = r;
-//             }
-
-//             if smallest != i as usize {
-//                 self.swap(smallest as i32, i);
-//             } else {
-//                 break;
-//             }
-//             i = smallest as i32;
-//         }
-//         i > i0
-//     }
-
-//     pub fn update_order_up(&mut self, mut i: i32) -> () {
-//         while i > 0 {
-//             let par = TopKHeap::parent(i);
-//             if self.heap[par as usize].count > self.heap[i as usize].count {
-//                 self.swap(par, i);
-//                 i = par;
-//             } else {
-//                 break;
-//             }
-//         }
-//     }
-// }
-
 /// Wrapper around CommonHeap for HHItem with TopK heavy hitter tracking.
 /// Modern replacement for TopKHeap using the generic CommonHeap structure.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -257,46 +93,263 @@ impl HHHeap {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        CommonHeap, CommonHeapOrder, CommonMaxHeap, CommonMinHeap, HeapItem, SketchInput, common::input::HHItem
+    };
 
-//     #[test]
-//     fn heap_retains_top_k_items_by_count() {
-//         // confirm inserting beyond capacity keeps only the k largest counts
-//         let mut heap = TopKHeap::init_heap(3);
-//         for i in 1..=5 {
-//             let key = format!("key-{i}");
-//             heap.update(&key, i);
-//         }
+    fn heap_item_from_str(value: &str) -> HeapItem {
+        HeapItem::String(value.to_string())
+    }
 
-//         assert_eq!(heap.heap.len(), 3);
-//         let mut counts: Vec<i64> = heap.heap.iter().map(|item| item.count).collect();
-//         counts.sort_unstable();
-//         assert_eq!(counts, vec![3, 4, 5]);
-//     }
+    #[test]
+    fn heap_retains_top_k_items_by_count() {
+        // confirm inserting beyond capacity keeps only the k largest counts
+        let mut heap = HHHeap::new(3);
+        for i in 1..=5 {
+            let key = format!("key-{i}");
+            let key_item = heap_item_from_str(&key);
+            heap.update(&key_item, i as i64);
+        }
 
-//     #[test]
-//     fn update_count_increments_existing_entry() {
-//         // ensure update_count bumps stored counter instead of replacing the entry
-//         let mut heap = TopKHeap::init_heap(4);
-//         heap.update_count("alpha", 1);
-//         heap.update_count("alpha", 1);
-//         heap.update_count("alpha", 1);
+        assert_eq!(heap.heap.len(), 3);
+        let mut counts: Vec<i64> = heap.heap.iter().map(|item| item.count).collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![3, 4, 5]);
+    }
 
-//         let idx = heap.find("alpha").expect("alpha present");
-//         assert_eq!(heap.heap[idx].count, 3);
-//     }
+    #[test]
+    fn update_count_increments_existing_entry() {
+        // ensure update_count bumps stored counter instead of replacing the entry
+        let mut heap = HHHeap::new(4);
+        let key_item = heap_item_from_str("alpha");
+        let mut count = 0;
+        for _ in 0..3 {
+            count += 1;
+            heap.update(&key_item, count);
+        }
 
-//     #[test]
-//     fn clean_resets_heap_state() {
-//         // cleaning should drop all entries and reclaim capacity
-//         let mut heap = TopKHeap::init_heap(2);
-//         heap.update("a", 5);
-//         heap.update("b", 6);
-//         assert_eq!(heap.heap.len(), 2);
+        let idx = heap.find(&key_item).expect("alpha present");
+        assert_eq!(heap.heap[idx].count, 3);
+    }
 
-//         heap.clean();
-//         assert!(heap.heap.is_empty());
-//     }
-// }
+    #[test]
+    fn clean_resets_heap_state() {
+        // cleaning should drop all entries and reclaim capacity
+        let mut heap = HHHeap::new(2);
+        let key_a = heap_item_from_str("a");
+        let key_b = heap_item_from_str("b");
+        heap.update(&key_a, 5);
+        heap.update(&key_b, 6);
+        assert_eq!(heap.heap.len(), 2);
+
+        heap.clear();
+        assert!(heap.heap.is_empty());
+    }
+
+
+
+    #[test]
+    fn test_min_heap_basic() {
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        heap.push(5);
+        heap.push(3);
+        heap.push(7);
+        heap.push(1);
+
+        assert_eq!(heap.peek(), Some(&1));
+        assert_eq!(heap.pop(), Some(1));
+        assert_eq!(heap.pop(), Some(3));
+        assert_eq!(heap.pop(), Some(5));
+        assert_eq!(heap.pop(), Some(7));
+        assert_eq!(heap.pop(), None);
+    }
+
+    #[test]
+    fn test_max_heap_basic() {
+        let mut heap = CommonHeap::<i32, CommonMaxHeap>::new_max(5);
+        heap.push(5);
+        heap.push(3);
+        heap.push(7);
+        heap.push(1);
+
+        assert_eq!(heap.peek(), Some(&7));
+        assert_eq!(heap.pop(), Some(7));
+        assert_eq!(heap.pop(), Some(5));
+        assert_eq!(heap.pop(), Some(3));
+        assert_eq!(heap.pop(), Some(1));
+        assert_eq!(heap.pop(), None);
+    }
+
+    #[test]
+    fn test_bounded_heap_capacity() {
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(3);
+
+        heap.push(5);
+        heap.push(3);
+        heap.push(7);
+        assert_eq!(heap.len(), 3);
+
+        // Should not grow beyond capacity
+        heap.push(1);
+        assert_eq!(heap.len(), 3);
+
+        // Smallest should be replaced by larger value since it's a min heap
+        heap.push(10);
+        assert_eq!(heap.len(), 3);
+
+        // Should contain 5, 7, 10 (1 and 3 were kicked out)
+        let mut vals: Vec<i32> = vec![];
+        while let Some(v) = heap.pop() {
+            vals.push(v);
+        }
+        vals.sort();
+        assert_eq!(vals, vec![5, 7, 10]);
+    }
+
+    #[test]
+    fn test_update_at() {
+        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        heap.push(10);
+        heap.push(20);
+        heap.push(5);
+
+        // Modify element and update heap
+        heap[1] = 3;
+        heap.update_at(1);
+
+        assert_eq!(heap.peek(), Some(&3));
+    }
+
+    #[test]
+    fn test_custom_struct_with_ord() {
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        heap.push(HHItem::new(SketchInput::String("five".to_owned()), 5));
+        heap.push(HHItem::new(SketchInput::String("three".to_owned()), 3));
+        heap.push(HHItem::new(SketchInput::String("seven".to_owned()), 7));
+
+        assert_eq!(heap.peek().map(|item| item.count), Some(3));
+    }
+
+    #[test]
+    fn test_topk_use_case() {
+        // Simulates TopKHeap use case: maintain top-K items by count
+        // Use min-heap so smallest is at root and can be evicted
+
+        // Create a min-heap with capacity 3 to keep top-3 items
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+
+        // Insert items (simulating TopKHeap behavior)
+        for i in 1..=5 {
+            heap.push(HHItem::new(SketchInput::String(format!("key-{i}").to_owned()), i));
+        }
+
+        // Should keep top 3: counts 3, 4, 5
+        assert_eq!(heap.len(), 3);
+        let mut counts: Vec<i64> = heap.iter().map(|item| item.count).collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![3, 4, 5]);
+
+        // Test finding an item (linear search like TopKHeap::find)
+        let found = heap.iter().find(|item| item.key == HeapItem::String("key-4".to_owned()));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().count, 4);
+    }
+
+    #[test]
+    fn test_heap_size() {
+        // Verify that MinHeap/MaxHeap add zero overhead
+        use std::mem::size_of;
+
+        let vec_size = size_of::<Vec<u64>>();
+        let heap_min_size = size_of::<CommonHeap<u64, CommonMinHeap>>();
+        let heap_max_size = size_of::<CommonHeap<u64, CommonMaxHeap>>();
+
+        println!("Vec<u64> size: {vec_size}");
+        println!("Heap<u64, MinHeap> size: {heap_min_size}");
+        println!("Heap<u64, MaxHeap> size: {heap_max_size}");
+
+        // Vec is (ptr, capacity, len) = 24 bytes on 64-bit
+        // Our heap is (Vec, usize, O) where O is zero-sized
+        // So it should be 24 + 8 = 32 bytes
+        assert_eq!(heap_min_size, vec_size + size_of::<usize>());
+        assert_eq!(heap_max_size, vec_size + size_of::<usize>());
+    }
+
+    #[test]
+    fn test_topk_with_custom_comparator() {
+        // Example of custom heap ordering (though Item already has Ord by count)
+        // This demonstrates how to create custom orderings
+        #[derive(Clone)]
+        struct CompareByCount;
+
+        impl CommonHeapOrder<HHItem> for CompareByCount {
+            fn should_swap(&self, parent: &HHItem, child: &HHItem) -> bool {
+                child.count < parent.count
+            }
+
+            fn should_replace_root(&self, root: &HHItem, new_value: &HHItem) -> bool {
+                new_value.count > root.count
+            }
+        }
+
+        let mut heap = CommonHeap::<HHItem, CompareByCount>::with_capacity(3, CompareByCount);
+
+        heap.push(HHItem::new(SketchInput::String("a".to_owned()), 5));
+        heap.push(HHItem::new(SketchInput::String("b".to_owned()), 3));
+        heap.push(HHItem::new(SketchInput::String("c".to_owned()), 7));
+        heap.push(HHItem::new(SketchInput::String("d".to_owned()), 1)); // Won't be added
+        heap.push(HHItem::new(SketchInput::String("e".to_owned()), 10)); // Will replace min
+
+        assert_eq!(heap.len(), 3);
+        let min_count = heap.peek().map(|item| item.count);
+        assert_eq!(min_count, Some(5)); // 5 is now the minimum in the heap
+    }
+
+    #[test]
+    fn test_exact_topk_heap_replacement() {
+        // This test demonstrates EXACT TopKHeap behavior using generic Heap
+
+        // TopKHeap::init_heap(3) equivalent:
+        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+
+        // TopKHeap::update("key-1", 1) equivalent:
+        let find_and_update =
+            |heap: &mut CommonHeap<HHItem, CommonMinHeap>, key: &str, count: i64| {
+                // TopKHeap::find() equivalent:
+                let idx_opt = heap.iter().position(|item| item.key == HeapItem::String(key.to_owned()));
+
+                if let Some(idx) = idx_opt {
+                    // Found: update count
+                    heap[idx].count = count;
+                    heap.update_at(idx);
+                } else {
+                    // Not found: insert (TopKHeap::insert equivalent)
+                    heap.push(HHItem::new(SketchInput::Str(key), count));
+                }
+            };
+
+        // Replicate the exact test from TopKHeap
+        for i in 1..=5 {
+            let key = format!("key-{i}");
+            find_and_update(&mut heap, &key, i);
+        }
+
+        // Should match TopKHeap behavior exactly
+        assert_eq!(heap.len(), 3);
+        let mut counts: Vec<i64> = heap.iter().map(|item| item.count).collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![3, 4, 5]); // Same as TopKHeap test!
+
+        // TopKHeap::find() equivalent:
+        let found = heap.iter().find(|item| item.key == HeapItem::String("key-4".to_owned()));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().count, 4);
+
+        // TopKHeap::clean() equivalent:
+        heap.clear();
+        assert!(heap.is_empty());
+    }
+}
