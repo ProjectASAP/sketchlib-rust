@@ -179,6 +179,51 @@ impl<'a> PartialEq for SketchInput<'a> {
     }
 }
 
+impl PartialEq<SketchInput<'_>> for HeapItem {
+    fn eq(&self, other: &SketchInput<'_>) -> bool {
+        match (self, other) {
+            (HeapItem::I8(l), SketchInput::I8(r)) => l == r,
+            (HeapItem::I16(l), SketchInput::I16(r)) => l == r,
+            (HeapItem::I32(l), SketchInput::I32(r)) => l == r,
+            (HeapItem::I64(l), SketchInput::I64(r)) => l == r,
+            (HeapItem::I128(l), SketchInput::I128(r)) => l == r,
+            (HeapItem::ISIZE(l), SketchInput::ISIZE(r)) => l == r,
+            (HeapItem::U8(l), SketchInput::U8(r)) => l == r,
+            (HeapItem::U16(l), SketchInput::U16(r)) => l == r,
+            (HeapItem::U32(l), SketchInput::U32(r)) => l == r,
+            (HeapItem::U64(l), SketchInput::U64(r)) => l == r,
+            (HeapItem::U128(l), SketchInput::U128(r)) => l == r,
+            (HeapItem::USIZE(l), SketchInput::USIZE(r)) => l == r,
+            (HeapItem::F32(l), SketchInput::F32(r)) => l == r,
+            (HeapItem::F64(l), SketchInput::F64(r)) => l == r,
+            (HeapItem::String(l), SketchInput::Str(r)) => l == r,
+            (HeapItem::String(l), SketchInput::String(r)) => l == r,
+            (HeapItem::String(l), SketchInput::Bytes(bytes)) => {
+                std::str::from_utf8(bytes).map(|s| l == s).unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<&SketchInput<'_>> for HeapItem {
+    fn eq(&self, other: &&SketchInput<'_>) -> bool {
+        self == *other
+    }
+}
+
+impl<'a> PartialEq<HeapItem> for SketchInput<'a> {
+    fn eq(&self, other: &HeapItem) -> bool {
+        other == self
+    }
+}
+
+impl<'a> PartialEq<&HeapItem> for SketchInput<'a> {
+    fn eq(&self, other: &&HeapItem) -> bool {
+        self == *other
+    }
+}
+
 /// enum that can be used by UnivMon
 /// using CountL2HH as State-Of-Art example
 #[derive(Clone, Debug, Serialize, Deserialize)]

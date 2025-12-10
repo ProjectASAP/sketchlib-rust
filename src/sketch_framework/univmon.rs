@@ -1,5 +1,5 @@
 use crate::common::heap::HHHeap;
-use crate::common::{BOTTOM_LAYER_FINDER, SketchInput, input_to_owned, hash_it_to_64, hash_item_to_64};
+use crate::common::{BOTTOM_LAYER_FINDER, SketchInput, hash_it_to_64, hash_item_to_64};
 use crate::common::{L2HH, Vector1D};
 use crate::sketches::count::CountL2HH;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ impl UnivMon {
             } else {
                 self.l2_sketch_layers[i].update_and_est_without_l2(key, value)
             };
-            self.hh_layers[i].update(&input_to_owned(key), count as i64);
+            self.hh_layers[i].update(&key, count as i64);
         }
     }
 
@@ -99,7 +99,7 @@ impl UnivMon {
         let bottom_layer_num = self.find_bottom_layer_num(h, self.layer_size);
         let count = self.l2_sketch_layers[bottom_layer_num].update_and_est(key, value);
         for i in 0..=bottom_layer_num {
-            self.hh_layers[i].update(&input_to_owned(key), count as i64);
+            self.hh_layers[i].update(&key, count as i64);
         }
     }
 
@@ -194,12 +194,12 @@ impl UnivMon {
         for i in 0..self.layer_size {
             self.l2_sketch_layers[i].merge(&other.l2_sketch_layers[i]);
             for item in other.hh_layers[i].heap() {
-                let count = if let Some(index) = self.hh_layers[i].find(&item.key) {
+                let count = if let Some(index) = self.hh_layers[i].find_heap_item(&item.key) {
                     self.hh_layers[i].heap()[index].count + item.count
                 } else {
                     item.count
                 };
-                self.hh_layers[i].update(&item.key, count);
+                self.hh_layers[i].update_heap_item(&item.key, count);
             }
         }
     }
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(um.bucket_size, 40);
 
         let idx = um.hh_layers[0]
-            .find(&HeapItem::String(key.to_owned()))
+            .find_heap_item(&HeapItem::String(key.to_owned()))
             .expect("heavy hitter should track key");
         assert!(
             um.hh_layers[0].heap()[idx].count >= 20,
@@ -281,13 +281,13 @@ mod tests {
         let right_heap = right.heap_at_layer(0);
         // let right_heap = right.heap_at_layer(00);
         let idx_left = left_heap
-            .find(&HeapItem::String(key_left.to_owned()))
+            .find_heap_item(&HeapItem::String(key_left.to_owned()))
             .expect("left key present");
         let idx_right_in_left = left_heap
-            .find(&HeapItem::String(key_right.to_owned()))
+            .find_heap_item(&HeapItem::String(key_right.to_owned()))
             .expect("left key present");
         let idx_right = right_heap
-            .find(&HeapItem::String(key_right.to_owned()))
+            .find_heap_item(&HeapItem::String(key_right.to_owned()))
             .expect("right key present");
         assert!(left_heap.heap()[idx_left].count == 25, "left in left is: {}", left_heap.heap()[idx_left].count);
         assert!(right_heap.heap()[idx_right].count == 30, "right in right is: {}", right_heap.heap()[idx_right].count);

@@ -1,5 +1,4 @@
 use crate::HHHeap;
-use crate::input::input_to_owned;
 use crate::{SketchInput, hash_it};
 use crate::{Vector1D, Vector2D};
 use serde::{Deserialize, Serialize};
@@ -30,15 +29,15 @@ impl LocherSketch {
         for i in 0..self.r {
             let idx = hash_it(i, &SketchInput::String(e.to_owned())) as usize % self.l;
             let cell = &mut self.rows[i][idx];
-            let before = match cell.find(&input_to_owned(&SketchInput::Str(e))) {
+            let before = match cell.find(&SketchInput::Str(e)) {
                 Some(heap_idx) => cell.heap()[heap_idx].count,
                 None => 0,
             };
             // println!("check e: {}", e);
             // println!("before is: {}", before);
             self.row_sum[i] -= before as f64;
-            cell.update(&input_to_owned(&SketchInput::Str(e)), before + 1);
-            let after = match cell.find(&input_to_owned(&SketchInput::Str(e))) {
+            cell.update(&SketchInput::Str(e), before + 1);
+            let after = match cell.find(&SketchInput::Str(e)) {
                 Some(heap_idx) => cell.heap()[heap_idx].count,
                 None => 0,
             };
@@ -52,7 +51,7 @@ impl LocherSketch {
         for i in 0..self.r {
             let idx = hash_it(i, &SketchInput::Str(e)) as usize % self.l;
             // let est = self.rows[i][idx].find(e).unwrap_or(0);
-            let est = match self.rows[i][idx].find(&input_to_owned(&SketchInput::Str(e))) {
+            let est = match self.rows[i][idx].find(&SketchInput::Str(e)) {
                 Some(v) => self.rows[i][idx].heap()[v].count,
                 None => 0,
             };

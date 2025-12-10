@@ -4,7 +4,7 @@
 //! where the HHHeap is a Min Heap that can take in
 //! HHItem defined in crate::common::input::HHItem
 
-use crate::HeapItem;
+use crate::{HeapItem, SketchInput, input_to_owned};
 use crate::common::input::{HHItem};
 use crate::common::{CommonHeap, CommonMinHeap};
 use serde::{Deserialize, Serialize};
@@ -27,13 +27,29 @@ impl HHHeap {
     }
 
     /// Finds an item by key, returns the index if found.
-    pub fn find(&self, key: &HeapItem) -> Option<usize> {
+    pub fn find(&self, key: &SketchInput) -> Option<usize> {
+        self.heap.iter().position(|item| item.key == key)
+    }
+
+    pub fn find_heap_item(&self, key: &HeapItem) -> Option<usize> {
         self.heap.iter().position(|item| item.key == *key)
     }
 
     /// Updates an existing item's count or inserts a new item.
-    pub fn update<'k>(&mut self, key: &HeapItem, count: i64) -> bool {
+    pub fn update<'k>(&mut self, key: &SketchInput, count: i64) -> bool {
         if let Some(idx) = self.find(key) {
+            self.heap[idx].count = count;
+            self.heap.update_at(idx);
+            true
+        } else {
+            let owned = input_to_owned(key);
+            self.heap.push(HHItem::create_item(owned, count));
+            true
+        }
+    }
+
+    pub fn update_heap_item(&mut self, key: &HeapItem, count: i64) -> bool {
+        if let Some(idx) = self.find_heap_item(key) {
             self.heap[idx].count = count;
             self.heap.update_at(idx);
             true
@@ -111,7 +127,7 @@ mod tests {
         for i in 1..=5 {
             let key = format!("key-{i}");
             let key_item = heap_item_from_str(&key);
-            heap.update(&key_item, i as i64);
+            heap.update_heap_item(&key_item, i as i64);
         }
 
         assert_eq!(heap.heap.len(), 3);
@@ -128,10 +144,10 @@ mod tests {
         let mut count = 0;
         for _ in 0..3 {
             count += 1;
-            heap.update(&key_item, count);
+            heap.update_heap_item(&key_item, count);
         }
 
-        let idx = heap.find(&key_item).expect("alpha present");
+        let idx = heap.find_heap_item(&key_item).expect("alpha present");
         assert_eq!(heap.heap[idx].count, 3);
     }
 
@@ -141,8 +157,8 @@ mod tests {
         let mut heap = HHHeap::new(2);
         let key_a = heap_item_from_str("a");
         let key_b = heap_item_from_str("b");
-        heap.update(&key_a, 5);
-        heap.update(&key_b, 6);
+        heap.update_heap_item(&key_a, 5);
+        heap.update_heap_item(&key_b, 6);
         assert_eq!(heap.heap.len(), 2);
 
         heap.clear();
