@@ -1,3 +1,6 @@
+use rmp_serde::{
+    decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::input::{HydraCounter, HydraQuery};
@@ -83,6 +86,26 @@ impl Hydra {
     pub fn query_quantile(&self, key: Vec<&str>, threshold: f64) -> f64 {
         self.query_key(key, &HydraQuery::Cdf(threshold))
     }
+
+    /// Serializes the Hydra sketch (including all counters) into MessagePack bytes.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
+    }
+
+    /// Convenience alias matching other sketches.
+    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        self.serialize_to_bytes()
+    }
+
+    /// Deserializes a Hydra sketch from MessagePack bytes.
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
+    }
+
+    /// Convenience alias matching other sketches.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        Self::deserialize_from_bytes(bytes)
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +185,57 @@ mod tests {
         let unrelated_value = SketchInput::I64(0);
         let unrelated = hydra.query_frequency(vec!["other"], &unrelated_value);
         assert_eq!(unrelated, 0.0);
+    }
+
+    #[test]
+    fn hydra_round_trip_serialization() {
+        let template = HydraCounter::CM(CountMin::with_dimensions(3, 64));
+        let mut hydra = Hydra::with_dimensions(3, 64, template);
+
+        let dataset = [
+            ("city;device", "event_a"),
+            ("city;device", "event_a"),
+            ("city;browser", "event_b"),
+            ("region;device", "event_c"),
+            ("city;device;country", "event_a"),
+        ];
+
+        for (key, value) in dataset {
+            hydra.update(key, &SketchInput::String(value.to_string()));
+        }
+
+        let hot_value = SketchInput::String("event_a".to_string());
+        let cold_value = SketchInput::String("event_c".to_string());
+
+        let freq_before = hydra.query_frequency(vec!["city", "device"], &hot_value);
+        let region_before = hydra.query_frequency(vec!["region"], &cold_value);
+
+        let encoded = hydra
+            .serialize_to_bytes()
+            .expect("serialize Hydra into MessagePack");
+        assert!(!encoded.is_empty(), "serialized bytes should not be empty");
+        let data = encoded.clone();
+
+        let decoded =
+            Hydra::deserialize_from_bytes(&data).expect("deserialize Hydra from MessagePack");
+
+        assert_eq!(hydra.row_num, decoded.row_num);
+        assert_eq!(hydra.col_num, decoded.col_num);
+        assert_eq!(hydra.sketches.rows(), decoded.sketches.rows());
+        assert_eq!(hydra.sketches.cols(), decoded.sketches.cols());
+        match &decoded.type_to_clone {
+            HydraCounter::CM(_) => {}
+            other => panic!("expected CM template, got {other:?}"),
+        }
+
+        let freq_after = decoded.query_frequency(vec!["city", "device"], &hot_value);
+        let region_after = decoded.query_frequency(vec!["region"], &cold_value);
+
+        assert_eq!(freq_before, freq_after, "frequency changed after serde");
+        assert_eq!(
+            region_before, region_after,
+            "region frequency changed after serde"
+        );
     }
 
     #[test]

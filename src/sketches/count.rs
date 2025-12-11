@@ -79,6 +79,30 @@ impl Count {
         );
     }
 
+    #[inline(always)]
+    pub fn fast_insert_nitro(&mut self, value: &SketchInput) {
+        let delta = self.counts.nitro().delta;
+        if self.counts.nitro().to_skip >= self.row {
+            self.counts.reduce_nitro_skip(self.row);
+        } else {
+            let hashed = hash_it_to_128(0, value);
+            let mut r = self.counts.nitro().to_skip;
+            loop {
+                let bit = (hashed >> (127 - r)) & 1;
+                let sign = (bit << 1) as i64 - 1;
+                self.counts
+                    .update_by_row(r, hashed, |a, b| *a += b, sign * (delta as i64));
+                self.counts.nitro_mut().draw_geometric();
+                if r + self.counts.nitro_mut().to_skip + 1 >= self.row {
+                    break;
+                }
+                r += self.counts.nitro_mut().to_skip + 1;
+            }
+            let temp = self.counts.get_nitro_skip();
+            self.counts.update_nitro_skip((r + temp + 1) - self.row);
+        }
+    }
+
     /// Returns the frequency estimate for the provided value.
     pub fn estimate(&self, value: &SketchInput) -> f64 {
         let mut estimates = Vec::with_capacity(self.row);
@@ -123,6 +147,10 @@ impl Count {
             let sign_bit = -(1 - 2 * bit);
             (sign_bit * (*val)) as f64
         })
+    }
+
+    pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
+        self.fast_estimate(value)
     }
 
     /// Merges another sketch while asserting compatible dimensions.
@@ -378,6 +406,26 @@ impl CountL2HH {
         let result = compute_median_inline_f64(&mut lst[..]);
         lst.clear();
         result
+    }
+
+    /// Serializes the CountL2HH sketch into MessagePack bytes.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
+    }
+
+    /// Convenience alias matching the other sketch APIs.
+    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        self.serialize_to_bytes()
+    }
+
+    /// Deserializes a CountL2HH sketch from MessagePack bytes.
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
+    }
+
+    /// Convenience alias matching the other sketch APIs.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        Self::deserialize_from_bytes(bytes)
     }
 }
 
@@ -1745,5 +1793,36 @@ mod tests {
 
         left.merge(&right);
         assert_eq!(left.fast_get_est(&key), 13.0);
+    }
+
+    #[test]
+    fn countl2hh_round_trip_serialization() {
+        let mut sketch = CountL2HH::with_dimensions_and_seed(3, 32, 7);
+        let key = SketchInput::Str("serialize");
+
+        sketch.fast_insert_with_count(&key, 11);
+        sketch.fast_insert_with_count(&key, -3);
+        let base_est = sketch.fast_get_est(&key);
+        let base_l2 = sketch.get_l2();
+
+        let encoded = sketch
+            .serialize_to_bytes()
+            .expect("serialize CountL2HH into MessagePack");
+        assert!(!encoded.is_empty(), "serialized bytes should not be empty");
+        let data = encoded.clone();
+
+        let decoded = CountL2HH::deserialize_from_bytes(&data)
+            .expect("deserialize CountL2HH from MessagePack");
+
+        assert_eq!(sketch.rows(), decoded.rows());
+        assert_eq!(sketch.cols(), decoded.cols());
+        assert!(
+            (decoded.fast_get_est(&key) - base_est).abs() < f64::EPSILON,
+            "estimate changed after round trip"
+        );
+        assert!(
+            (decoded.get_l2() - base_l2).abs() < f64::EPSILON,
+            "L2 changed after round trip"
+        );
     }
 }

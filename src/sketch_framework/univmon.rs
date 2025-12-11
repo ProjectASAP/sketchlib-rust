@@ -2,6 +2,9 @@ use crate::common::heap::HHHeap;
 use crate::common::{BOTTOM_LAYER_FINDER, SketchInput, hash_it_to_64, hash_item_to_64};
 use crate::common::{L2HH, Vector1D};
 use crate::sketches::count::CountL2HH;
+use rmp_serde::{
+    decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
+};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_SKETCH_ROW: usize = 5;
@@ -206,12 +209,86 @@ impl UnivMon {
     pub fn heap_at_layer(&mut self, layer: usize) -> &mut HHHeap {
         &mut self.hh_layers[layer]
     }
+
+    /// Serializes the UnivMon sketch into MessagePack bytes.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
+    }
+
+    /// Convenience alias for backwards-compatible APIs.
+    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        self.serialize_to_bytes()
+    }
+
+    /// Deserializes a UnivMon sketch from MessagePack bytes.
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
+    }
+
+    /// Convenience alias for backwards-compatible APIs.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        Self::deserialize_from_bytes(bytes)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{HeapItem, SketchInput};
+    use core::f64;
+
+    #[test]
+    fn univmon_round_trip_serialization() {
+        let mut um = UnivMon::init_univmon(12, 3, 64, 4);
+        let flows = [
+            ("alpha", 5),
+            ("beta", 7),
+            ("gamma", 9),
+            ("alpha", 3),
+            ("delta", 11),
+        ];
+
+        for (key, count) in flows {
+            um.insert(&SketchInput::String(key.to_string()), count);
+        }
+
+        let bucket_size_before = um.bucket_size;
+        let l1_before = um.calc_l1();
+        let l2_before = um.calc_l2();
+        let entropy_before = um.calc_entropy();
+        let card_before = um.calc_card();
+
+        let encoded = um
+            .serialize_to_bytes()
+            .expect("serialize UnivMon into MessagePack");
+        assert!(!encoded.is_empty(), "serialized bytes should not be empty");
+        let data = encoded.clone();
+
+        let decoded =
+            UnivMon::deserialize_from_bytes(&data).expect("deserialize UnivMon from MessagePack");
+
+        assert_eq!(um.layer_size, decoded.layer_size);
+        assert_eq!(um.sketch_row, decoded.sketch_row);
+        assert_eq!(um.sketch_col, decoded.sketch_col);
+        assert_eq!(um.heap_size, decoded.heap_size);
+        assert_eq!(bucket_size_before, decoded.bucket_size);
+        assert!(
+            (decoded.calc_l1() - l1_before).abs() < 1e-6,
+            "L1 changed after round trip"
+        );
+        assert!(
+            (decoded.calc_l2() - l2_before).abs() < 1e-6,
+            "L2 changed after round trip"
+        );
+        assert!(
+            (decoded.calc_entropy() - entropy_before).abs() < 1e-6,
+            "entropy changed after round trip"
+        );
+        assert!(
+            (decoded.calc_card() - card_before).abs() < f64::EPSILON,
+            "cardinality changed after round trip"
+        );
+    }
 
     // fn bottom_layer_for(um: &UnivMon, key: &str) -> usize {
     //     let hash = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
