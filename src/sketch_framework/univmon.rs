@@ -236,7 +236,7 @@ mod tests {
     use super::*;
     use crate::{HeapItem, SketchInput};
     use core::f64;
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
     use std::collections::HashMap;
 
     #[test]
@@ -672,11 +672,7 @@ mod tests {
             .values()
             .map(|&v| {
                 let val = v as f64;
-                if val > 0.0 {
-                    val * val.log2()
-                } else {
-                    0.0
-                }
+                if val > 0.0 { val * val.log2() } else { 0.0 }
             })
             .sum::<f64>();
         let true_entropy = total_mass.log2() - entropy_term / total_mass;

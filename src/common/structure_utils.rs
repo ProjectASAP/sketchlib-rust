@@ -6,6 +6,8 @@
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng, rng};
 use serde::{Deserialize, Serialize};
+
+use crate::PRECOMPUTED_SAMPLE;
 /// Helper trait for converting sketch counter types to f64 for median calculation.
 pub trait ToF64 {
     fn to_f64(self) -> f64;
@@ -50,6 +52,8 @@ pub struct Nitro {
     #[serde(default = "new_small_rng")]
     generator: SmallRng,
     pub delta: u64,
+    idx: usize,
+    mask: usize,
 }
 
 fn new_small_rng() -> SmallRng {
@@ -66,6 +70,8 @@ impl Default for Nitro {
             inv_ln_one_minus_p: 0.0, // not used unless Nitro mode is enabled
             generator: new_small_rng(), // not used unless Nitro mode is enabled
             delta: 0,
+            idx: 0,
+            mask: 0x10000,
         }
     }
 }
@@ -88,25 +94,29 @@ impl Nitro {
             inv_ln_one_minus_p: inv_ln,
             generator: new_small_rng(),
             delta: 0,
+            idx: 0,
+            mask: 0x10000,
         };
         nitro.delta = nitro.scaled_increment(1);
         nitro
     }
 
     // for profiling
-    #[inline(never)]
+    #[inline(always)]
     pub fn draw_geometric(&mut self) {
         if self.is_full_sampling() {
             self.to_skip = 0;
             return;
         }
-        let k = loop {
-            let r = self.generator.random::<f64>();
-            if r != 0.0_f64 && r != 1.0_f64 {
-                break r;
-            }
-        };
-        self.to_skip = ((1.0 - k).ln() * self.inv_ln_one_minus_p).ceil() as usize;
+        // let k = loop {
+        //     let r = self.generator.random::<f64>();
+        //     if r != 0.0_f64 && r != 1.0_f64 {
+        //         break r;
+        //     }
+        // };
+        // self.to_skip = ((1.0 - k).ln() * self.inv_ln_one_minus_p).ceil() as usize;
+        self.to_skip = (PRECOMPUTED_SAMPLE[self.idx] * self.inv_ln_one_minus_p).ceil() as usize;
+        self.idx = (self.idx + 1) & self.mask;
     }
 
     #[inline(always)]

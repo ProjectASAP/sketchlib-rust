@@ -90,29 +90,76 @@ impl CountMin {
     /// Inserts an observation using Nitro-aware sampling logic.
     #[inline(always)]
     pub fn fast_insert_nitro(&mut self, value: &SketchInput) {
-        // if self.counts.nitro().to_skip > 0 {
-        //     self.counts.reduce_to_skip();
+        // let delta = self.counts.nitro().delta;
+        // // let nitro = self.counts.nitro_mut();
+        // if self.counts.nitro().to_skip >= self.row {
+        //     self.counts.reduce_nitro_skip(self.row);
         // } else {
-        //     let hashed_val = hash_it_to_128(0, value);
-        //     self.fast_insert_nitro_with_hash_value(hashed_val);
+        //     let hashed = hash_it_to_128(0, value);
+        //     let mut r = self.counts.nitro().to_skip;
+        //     loop {
+        //         self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
+        //         self.counts.nitro_mut().draw_geometric();
+        //         if r + self.counts.nitro_mut().to_skip + 1 >= self.row {
+        //             break;
+        //         }
+        //         r += self.counts.nitro_mut().to_skip + 1;
+        //     }
+        //     let temp = self.counts.get_nitro_skip();
+        //     self.counts.update_nitro_skip((r + temp + 1) - self.row);
         // }
-        let delta = self.counts.nitro().delta;
-        // let nitro = self.counts.nitro_mut();
+        // 1. FASTEST PATH: Packet Skipped Completely
+        // Most common case for very low sampling rates
         if self.counts.nitro().to_skip >= self.row {
             self.counts.reduce_nitro_skip(self.row);
-        } else {
-            let hashed = hash_it_to_128(0, value);
-            let mut r = self.counts.nitro().to_skip;
-            loop {
-                self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
-                self.counts.nitro_mut().draw_geometric();
-                if r + self.counts.nitro_mut().to_skip + 1 >= self.row {
-                    break;
-                }
-                r += self.counts.nitro_mut().to_skip + 1;
+            return;
+        }
+
+        // 2. INITIALIZATION (Only done if we actually update)
+        let delta = self.counts.nitro().delta;
+        // let scaling_factor = nitro.scaling_factor; // Precalc: 1.0 / ln(1.0 - p)
+        let hashed = hash_it_to_128(0, value);
+        let mut r = self.counts.nitro().to_skip;
+
+        // 3. OPTIMISTIC UPDATE (Unrolled Loop)
+        // We know we must update at least once here.
+        self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
+
+        // Draw next skip using precomputed logs
+        // Math: floor( ln(u) * (1 / ln(1-p)) )
+        // let log_u = self.precomputed.next_log_u();
+        // let next_skip = (log_u * scaling_factor) as usize;
+        self.counts.nitro_mut().draw_geometric();
+
+        // 4. CHECK BOUNDS (The "No Loop" Check)
+        // If the next skip jumps out of this packet, we are done.
+        // This is true 99% of the time for low sampling rates.
+        let next_skip = self.counts.get_nitro_skip();
+        if r + next_skip + 1 >= self.row {
+            let remaining = (r + next_skip + 1) - self.row;
+            self.counts.update_nitro_skip(remaining);
+            return;
+        }
+
+        // 5. RARE FALLBACK: The Loop
+        // We only enter here if we got "unlucky" and hit the same packet twice.
+        self.finish_complex_update(r + next_skip + 1, hashed, delta);
+    }
+
+    #[cold]
+    fn finish_complex_update(&mut self, start_r: usize, hashed: u128, delta: u64) {
+        let mut r = start_r;
+        loop {
+            self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
+            self.counts.nitro_mut().draw_geometric();
+
+            let next_skip = self.counts.get_nitro_skip();
+            if r + next_skip + 1 >= self.row {
+                let remaining = (r + next_skip + 1) - self.row;
+                self.counts.update_nitro_skip(remaining);
+                break;
             }
-            let temp = self.counts.get_nitro_skip();
-            self.counts.update_nitro_skip((r + temp + 1) - self.row);
+            r += next_skip + 1;
         }
     }
 
