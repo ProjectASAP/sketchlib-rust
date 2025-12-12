@@ -3,6 +3,7 @@ use rmp_serde::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::PRECOMPUTED_SAMPLE;
 use crate::Vector2D;
 use crate::{SketchInput, hash_it_to_128};
 
@@ -108,42 +109,93 @@ impl CountMin {
         //     let temp = self.counts.get_nitro_skip();
         //     self.counts.update_nitro_skip((r + temp + 1) - self.row);
         // }
-        // 1. FASTEST PATH: Packet Skipped Completely
-        // Most common case for very low sampling rates
-        if self.counts.nitro().to_skip >= self.row {
-            self.counts.reduce_nitro_skip(self.row);
+
+        // // 1. FASTEST PATH: Packet Skipped Completely
+        // // Most common case for very low sampling rates
+        // if self.counts.nitro().to_skip >= self.row {
+        //     self.counts.reduce_nitro_skip(self.row);
+        //     return;
+        // }
+
+        // // 2. INITIALIZATION (Only done if we actually update)
+        // let delta = self.counts.nitro().delta;
+        // // let scaling_factor = nitro.scaling_factor; // Precalc: 1.0 / ln(1.0 - p)
+        // let hashed = hash_it_to_128(0, value);
+        // let mut r = self.counts.nitro().to_skip;
+
+        // // 3. OPTIMISTIC UPDATE (Unrolled Loop)
+        // // We know we must update at least once here.
+        // self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
+
+        // // Draw next skip using precomputed logs
+        // // Math: floor( ln(u) * (1 / ln(1-p)) )
+        // // let log_u = self.precomputed.next_log_u();
+        // // let next_skip = (log_u * scaling_factor) as usize;
+        // self.counts.nitro_mut().draw_geometric();
+
+        // // 4. CHECK BOUNDS (The "No Loop" Check)
+        // // If the next skip jumps out of this packet, we are done.
+        // // This is true 99% of the time for low sampling rates.
+        // let next_skip = self.counts.get_nitro_skip();
+        // if r + next_skip + 1 >= self.row {
+        //     let remaining = (r + next_skip + 1) - self.row;
+        //     self.counts.update_nitro_skip(remaining);
+        //     return;
+        // }
+
+        // // 5. RARE FALLBACK: The Loop
+        // // We only enter here if we got "unlucky" and hit the same packet twice.
+        // self.finish_complex_update(r + next_skip + 1, hashed, delta);
+
+        // 1. ACCESS: Pull state into local registers (HOISTING)
+        // accessing self.counts.nitro() repeatedly is slow. Do it once.
+        let nitro = self.counts.nitro();
+        let (mut idx, inv_p, mut to_skip, mask) = nitro.get_ctx();
+
+        // 2. FAST PATH: Packet Skipped Completely
+        if to_skip >= self.row {
+            // Update local register
+            to_skip -= self.row;
+            // Write back to memory and exit
+            self.counts.nitro_mut().commit_ctx(idx, to_skip);
             return;
         }
 
-        // 2. INITIALIZATION (Only done if we actually update)
-        let delta = self.counts.nitro().delta;
-        // let scaling_factor = nitro.scaling_factor; // Precalc: 1.0 / ln(1.0 - p)
+        // 3. INITIALIZATION
+        let delta = nitro.delta;
         let hashed = hash_it_to_128(0, value);
-        let mut r = self.counts.nitro().to_skip;
+        let mut r = to_skip; // Start at the first row we hit
 
-        // 3. OPTIMISTIC UPDATE (Unrolled Loop)
-        // We know we must update at least once here.
-        self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
+        // 4. THE HOT LOOP (Inlined & Unchecked)
+        loop {
+            // Update the specific row
+            // Note: Ensure update_by_row is #[inline(always)] in Vector2D
+            self.counts.update_by_row(r, hashed, |a, b| *a += b, delta);
 
-        // Draw next skip using precomputed logs
-        // Math: floor( ln(u) * (1 / ln(1-p)) )
-        // let log_u = self.precomputed.next_log_u();
-        // let next_skip = (log_u * scaling_factor) as usize;
-        self.counts.nitro_mut().draw_geometric();
+            // INLINED draw_geometric
+            // SAFETY: We manually mask the index, so it is always within bounds
+            // Assuming PRECOMPUTED_SAMPLE is size 65536 and mask is 0xFFFF
+            let random_val = unsafe { *PRECOMPUTED_SAMPLE.get_unchecked(idx) };
+            idx = (idx + 1) & mask;
 
-        // 4. CHECK BOUNDS (The "No Loop" Check)
-        // If the next skip jumps out of this packet, we are done.
-        // This is true 99% of the time for low sampling rates.
-        let next_skip = self.counts.get_nitro_skip();
-        if r + next_skip + 1 >= self.row {
-            let remaining = (r + next_skip + 1) - self.row;
-            self.counts.update_nitro_skip(remaining);
-            return;
+            // MATH OPTIMIZATION: Use truncation (as usize) instead of .ceil()
+            // This is valid if precomputed values are set up correctly,
+            // or we accept the microscopic bias.
+            // If strict exactness is needed: (val * inv_p).ceil() as usize
+            let next_jump = (random_val * inv_p) as usize;
+
+            // Check bounds
+            if r + next_jump + 1 >= self.row {
+                // Calculate remaining skip for next packet
+                to_skip = (r + next_jump + 1) - self.row;
+                break;
+            }
+
+            r += next_jump + 1;
         }
 
-        // 5. RARE FALLBACK: The Loop
-        // We only enter here if we got "unlucky" and hit the same packet twice.
-        self.finish_complex_update(r + next_skip + 1, hashed, delta);
+        // 5. COMMIT: Write local registers back to struct memory
+        self.counts.nitro_mut().commit_ctx(idx, to_skip);
     }
 
     #[cold]

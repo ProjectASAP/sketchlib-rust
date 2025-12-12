@@ -149,6 +149,17 @@ impl Nitro {
     fn is_full_sampling(&self) -> bool {
         (self.sampling_rate - 1.0).abs() <= f64::EPSILON
     }
+
+    #[inline(always)]
+    pub fn get_ctx(&self) -> (usize, f64, usize, usize) {
+        (self.idx, self.inv_ln_one_minus_p, self.to_skip, self.mask)
+    }
+
+    #[inline(always)]
+    pub fn commit_ctx(&mut self, idx: usize, to_skip: usize) {
+        self.idx = idx;
+        self.to_skip = to_skip;
+    }
 }
 
 /// Compute median from a mutable slice of f64 values (inline helper)
