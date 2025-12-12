@@ -236,6 +236,8 @@ mod tests {
     use super::*;
     use crate::{HeapItem, SketchInput};
     use core::f64;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use std::collections::HashMap;
 
     #[test]
     fn univmon_round_trip_serialization() {
@@ -639,6 +641,61 @@ mod tests {
             "Entropy Error too high: {:.2}%",
             ent_err * 100.0
         );
+    }
+
+    #[test]
+    fn univmon_random_data_matches_ground_truth_within_five_percent() {
+        let mut rng = StdRng::seed_from_u64(0xDEADBEEF);
+        let mut um = UnivMon::init_univmon(256, 6, 8192, 16);
+        let mut truth: HashMap<String, i64> = HashMap::new();
+
+        for _ in 0..10_000 {
+            let key_id = rng.random::<u32>() % 5000;
+            let key = format!("key_{key_id}");
+            let value = (rng.random::<u32>() % 100 + 1) as i64;
+            *truth.entry(key.clone()).or_insert(0) += value;
+            um.insert(&SketchInput::String(key), value);
+        }
+
+        let total_mass: f64 = truth.values().map(|&v| v as f64).sum();
+        let true_l1 = total_mass;
+        let true_l2 = truth
+            .values()
+            .map(|&v| {
+                let val = v as f64;
+                val * val
+            })
+            .sum::<f64>()
+            .sqrt();
+        let true_card = truth.len() as f64;
+        let entropy_term = truth
+            .values()
+            .map(|&v| {
+                let val = v as f64;
+                if val > 0.0 {
+                    val * val.log2()
+                } else {
+                    0.0
+                }
+            })
+            .sum::<f64>();
+        let true_entropy = total_mass.log2() - entropy_term / total_mass;
+
+        let to_check = [
+            ("cardinality", um.calc_card(), true_card),
+            ("l1", um.calc_l1(), true_l1),
+            ("l2", um.calc_l2(), true_l2),
+            ("entropy", um.calc_entropy(), true_entropy),
+        ];
+
+        for (name, estimate, expected) in to_check {
+            let rel_err = (estimate - expected).abs() / expected;
+            assert!(
+                rel_err <= 0.05,
+                "{name} relative error {:.2}% exceeds 5%: est={estimate}, expected={expected}",
+                rel_err * 100.0
+            );
+        }
     }
 }
 
