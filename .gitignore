@@ -6,3 +6,8 @@ slideaway
 target
 querysimulation/.vscode
 profile.json.gz
+# Local assistant metadata
+.claude
+
+# Local binaries
+binary
