@@ -1,6 +1,9 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng};
-use sketchlib_rust::{Count, CountMin, HllDf, SketchInput, sketch_framework::hashlayer::HashLayer};
+use sketchlib_rust::{
+    Count, CountMin, FastPath, HllDf, RegularPath, SketchInput, Vector2D,
+    sketch_framework::hashlayer::HashLayer,
+};
 
 const SAMPLE_COUNT: usize = 10_000;
 const RNG_SEED: u64 = 0x5eed_c0de_1234_5678;
@@ -18,12 +21,18 @@ fn bench_separate_insert_three_sketches(c: &mut Criterion) {
 
     c.bench_function("separate_insert_three_sketches", |b| {
         b.iter_with_setup(
-            || (CountMin::default(), Count::default(), HllDf::default()),
+            || {
+                (
+                    CountMin::<Vector2D<i32>, FastPath>::default(),
+                    Count::<Vector2D<i32>, RegularPath>::default(),
+                    HllDf::default(),
+                )
+            },
             |(mut cm, mut count, mut hll)| {
                 for key in &keys {
                     // Each insert computes its own hash
-                    cm.fast_insert(key);
-                    count.fast_insert(key);
+                    cm.insert(key);
+                    count.insert(key);
                     hll.insert(key);
                 }
                 black_box((cm, count, hll));

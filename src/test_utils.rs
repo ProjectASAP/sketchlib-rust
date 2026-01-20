@@ -154,6 +154,13 @@ pub fn all_counter_zero_i64(v: &Vector2D<i64>) {
     );
 }
 
+pub fn all_counter_zero_i32(v: &Vector2D<i32>) {
+    assert!(
+        v.as_slice().iter().all(|&value| value == 0),
+        "not all counter is zero"
+    );
+}
+
 pub fn all_zero_except_u64(v: &Vector2D<u64>, non_zero: Vec<usize>) {
     // println!("{:?}", v.as_slice());
     // println!("{:?}", non_zero);
@@ -169,6 +176,16 @@ pub fn all_zero_except_u64(v: &Vector2D<u64>, non_zero: Vec<usize>) {
 pub fn all_zero_except_i64(v: &Vector2D<i64>, non_zero: Vec<usize>) {
     // println!("{:?}", v.as_slice());
     // println!("{:?}", non_zero);
+    for (idx, counter) in v.as_slice().iter().enumerate() {
+        if non_zero.contains(&idx) {
+            assert_ne!(*counter, 0, "counter {idx} should not be 0");
+        } else {
+            assert_eq!(*counter, 0, "counter {idx} should be 0");
+        }
+    }
+}
+
+pub fn all_zero_except_i32(v: &Vector2D<i32>, non_zero: Vec<usize>) {
     for (idx, counter) in v.as_slice().iter().enumerate() {
         if non_zero.contains(&idx) {
             assert_ne!(*counter, 0, "counter {idx} should not be 0");

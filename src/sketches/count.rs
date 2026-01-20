@@ -1,9 +1,13 @@
-use crate::{SketchInput, Vector1D, Vector2D, compute_median_inline_f64, hash_it_to_128};
+use crate::{
+    FastPath, FixedMatrix, MatrixStorage, NitroTarget, RegularPath, SketchInput, Vector1D,
+    Vector2D, compute_median_inline_f64, hash_it, hash_it_to_128,
+};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::marker::PhantomData;
 
 const DEFAULT_ROW_NUM: usize = 3;
 const DEFAULT_COL_NUM: usize = 4096;
@@ -11,110 +15,158 @@ const LOWER_32_MASK: u64 = (1u64 << 32) - 1;
 
 /// Count Sketch based on Common structure
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Count {
-    counts: Vector2D<i64>,
+pub struct Count<S: MatrixStorage<i32> = Vector2D<i32>, Mode = RegularPath> {
+    counts: S,
     row: usize,
     col: usize,
+    #[serde(skip)]
+    _mode: PhantomData<Mode>,
 }
 
-impl Default for Count {
+impl Default for Count<Vector2D<i32>, RegularPath> {
     fn default() -> Self {
         Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
     }
 }
 
-impl Count {
+impl Default for Count<Vector2D<i32>, FastPath> {
+    fn default() -> Self {
+        Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
+    }
+}
+
+impl Default for Count<FixedMatrix, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(FixedMatrix::default())
+    }
+}
+
+impl Default for Count<FixedMatrix, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(FixedMatrix::default())
+    }
+}
+
+impl<M> Count<Vector2D<i32>, M> {
     /// Creates a sketch with the requested number of rows and columns.
     pub fn with_dimensions(rows: usize, cols: usize) -> Self {
         let mut sk = Count {
             counts: Vector2D::init(rows, cols),
             row: rows,
             col: cols,
+            _mode: PhantomData,
         };
-        sk.counts.fill(0);
+        sk.counts.fill(0_i32);
         sk
+    }
+}
+
+impl<S: MatrixStorage<i32>, Mode> Count<S, Mode> {
+    pub fn from_storage(counts: S) -> Self {
+        let row = counts.rows();
+        let col = counts.cols();
+        Self {
+            counts,
+            row,
+            col,
+            _mode: PhantomData,
+        }
     }
 
     /// Number of rows in the sketch.
     pub fn rows(&self) -> usize {
-        self.row
+        self.counts.rows()
     }
 
     /// Number of columns in the sketch.
     pub fn cols(&self) -> usize {
-        self.col
+        self.counts.cols()
     }
 
-    /// Enables Nitro sampling with the provided rate.
-    pub fn enable_nitro(&mut self, sampling_rate: f64) {
-        self.counts.enable_nitro(sampling_rate);
-    }
+    /// Merges another sketch while asserting compatible dimensions.
+    pub fn merge(&mut self, other: &Self) {
+        let self_rows = self.counts.rows();
+        let self_cols = self.counts.cols();
+        assert_eq!(
+            (self_rows, self_cols),
+            (other.counts.rows(), other.counts.cols()),
+            "dimension mismatch while merging CountMin sketches"
+        );
 
-    /// Inserts an observation with standard Count Sketch updating algorithm.
-    pub fn insert(&mut self, value: &SketchInput) {
-        for r in 0..self.row {
-            let hashed = hash_it_to_128(r, value);
-            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
-            let bit = ((hashed >> (127)) & 1) as i64;
-            let sign_bit = -(1 - 2 * bit);
-            self.counts
-                .update_one_counter(r, col, |a, b| *a += sign_bit * b, 1_i64);
+        for i in 0..self_rows {
+            for j in 0..self_cols {
+                self.counts.update_one_counter(
+                    i,
+                    j,
+                    |a, b| *a += b,
+                    other.counts.query_one_counter(i, j),
+                );
+            }
         }
     }
 
-    /// Inserts an observation with hash optimization of Count Sketch updating algorithm.
-    /// On some architecture, this optimization may not have effect for small sketch
-    /// Inferred reason is the u128 is expensive
-    pub fn fast_insert(&mut self, value: &SketchInput) {
-        let hashed_val = hash_it_to_128(0, value);
-        self.fast_insert_with_hash_value(hashed_val);
+    /// Exposes the backing matrix for inspection/testing.
+    pub fn as_storage(&self) -> &S {
+        &self.counts
     }
 
-    /// Inserts an observation with hash optimization of Count Sketch updating algorithm.
-    /// The hash may be reused with other sketches
-    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
-        self.counts.fast_insert(
-            |counter, value, row| {
-                let bit = (hashed_val >> (127 - row)) & 1;
-                let sign = (bit << 1) as i64 - 1;
-                *counter += sign * *value;
-            },
-            1_i64,
-            hashed_val,
-        );
+    /// Mutable access used internally for testing scenarios.
+    pub fn as_storage_mut(&mut self) -> &mut S {
+        &mut self.counts
+    }
+}
+
+impl<S: MatrixStorage<i32> + Serialize, Mode> Count<S, Mode> {
+    /// Serializes the sketch into MessagePack bytes.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
+    }
+}
+
+impl<S: MatrixStorage<i32> + for<'de> Deserialize<'de>, Mode> Count<S, Mode> {
+    /// Deserializes a sketch from MessagePack bytes.
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
+    }
+}
+
+impl<S: MatrixStorage<i32>> Count<S, RegularPath> {
+    /// Inserts an observation with standard Count Sketch updating algorithm.
+    pub fn insert(&mut self, value: &SketchInput) {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        for r in 0..rows {
+            let hashed = hash_it_to_128(r, value);
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> (127)) & 1) as i32;
+            let sign_bit = -(1 - 2 * bit);
+            self.counts
+                .update_one_counter(r, col, |a, b| *a += sign_bit * b, 1_i32);
+        }
     }
 
-    #[inline(always)]
-    pub fn fast_insert_nitro(&mut self, value: &SketchInput) {
-        let delta = self.counts.nitro().delta;
-        if self.counts.nitro().to_skip >= self.row {
-            self.counts.reduce_nitro_skip(self.row);
-        } else {
-            let hashed = hash_it_to_128(0, value);
-            let mut r = self.counts.nitro().to_skip;
-            loop {
-                let bit = (hashed >> (127 - r)) & 1;
-                let sign = (bit << 1) as i64 - 1;
-                self.counts
-                    .update_by_row(r, hashed, |a, b| *a += b, sign * (delta as i64));
-                self.counts.nitro_mut().draw_geometric();
-                if r + self.counts.nitro_mut().to_skip + 1 >= self.row {
-                    break;
-                }
-                r += self.counts.nitro_mut().to_skip + 1;
-            }
-            let temp = self.counts.get_nitro_skip();
-            self.counts.update_nitro_skip((r + temp + 1) - self.row);
+    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        for r in 0..rows {
+            let hashed = hash_it_to_128(r, value);
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> (127)) & 1) as i32;
+            let sign_bit = -(1 - 2 * bit);
+            self.counts
+                .update_one_counter(r, col, |a, b| *a += sign_bit * b, many);
         }
     }
 
     /// Returns the frequency estimate for the provided value.
     pub fn estimate(&self, value: &SketchInput) -> f64 {
-        let mut estimates = Vec::with_capacity(self.row);
-        for r in 0..self.row {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        let mut estimates = Vec::with_capacity(rows);
+        for r in 0..rows {
             let hashed = hash_it_to_128(r, value);
-            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % self.col;
-            let bit = ((hashed >> (127)) & 1) as i64;
+            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> (127)) & 1) as i32;
             let sign_bit = -(1 - 2 * bit);
             let counter = self.counts.query_one_counter(r, col);
             estimates.push(sign_bit * counter);
@@ -130,89 +182,233 @@ impl Count {
             (estimates[mid - 1] as f64 + estimates[mid] as f64) / 2.0
         }
     }
+}
 
-    /// Returns the frequency estimate for the provided value, with hash optimization.
-    /// On some architecture, this optimization may not have effect for small sketch
-    /// Inferred reason is the u128 is expensive
-    pub fn fast_estimate(&self, value: &SketchInput) -> f64 {
+impl Count<Vector2D<i32>, FastPath> {
+    /// Inserts an observation using the combined hash optimization.
+    #[inline(always)]
+    pub fn insert(&mut self, value: &SketchInput) {
+        let hashed_val = hash_it_to_128(0, value);
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (127 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            1_i32,
+            hashed_val,
+        );
+    }
+
+    #[inline(always)]
+    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
+        let hashed_val = hash_it_to_128(0, value);
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (127 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            many,
+            hashed_val,
+        );
+    }
+
+    /// Returns the frequency estimate for the provided value.
+    #[inline(always)]
+    pub fn estimate(&self, value: &SketchInput) -> f64 {
         let hashed_val = hash_it_to_128(0, value);
         self.counts.fast_query_median(hashed_val, |val, row, hash| {
             let sign_bit_pos = 127 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i64;
+            let bit = ((hash >> sign_bit_pos) & 1) as i32;
             let sign_bit = -(1 - 2 * bit);
             (sign_bit * (*val)) as f64
         })
     }
 
+    /// Inserts an observation using a pre-computed hash value.
+    /// Hash value can be reused with other sketches.
+    #[inline(always)]
+    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (127 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            1_i32,
+            hashed_val,
+        );
+    }
+
+    #[inline(always)]
+    pub fn fast_insert_many_with_hash_value(&mut self, hashed_val: u128, many: i32) {
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (127 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            many,
+            hashed_val,
+        );
+    }
+
     /// Returns the frequency estimate using a pre-computed hash value.
+    #[inline(always)]
     pub fn fast_estimate_with_hash(&self, hashed_val: u128) -> f64 {
         self.counts.fast_query_median(hashed_val, |val, row, hash| {
             let sign_bit_pos = 127 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i64;
+            let bit = ((hash >> sign_bit_pos) & 1) as i32;
             let sign_bit = -(1 - 2 * bit);
             (sign_bit * (*val)) as f64
         })
     }
 
     pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
-        self.fast_estimate(value)
+        self.estimate(value)
     }
+}
 
-    /// Merges another sketch while asserting compatible dimensions.
-    pub fn merge(&mut self, other: &Self) {
-        assert_eq!(
-            (self.row, self.col),
-            (other.row, other.col),
-            "dimension mismatch while merging CountMin sketches"
+impl Count<FixedMatrix, FastPath> {
+    /// Inserts an observation using the combined hash optimization.
+    #[inline(always)]
+    pub fn insert(&mut self, value: &SketchInput) {
+        let hashed_val = hash_it(0, value);
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (63 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            1_i32,
+            hashed_val,
         );
-
-        for i in 0..self.row {
-            for j in 0..self.col {
-                self.counts.update_one_counter(
-                    i,
-                    j,
-                    |a, b| *a += b,
-                    other.counts.query_one_counter(i, j),
-                );
-            }
-        }
     }
 
-    /// Exposes the backing matrix for inspection/testing.
-    pub fn as_storage(&self) -> &Vector2D<i64> {
-        &self.counts
+    #[inline(always)]
+    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
+        let hashed_val = hash_it(0, value);
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (63 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            many,
+            hashed_val,
+        );
     }
 
-    /// Mutable access used internally for testing scenarios.
-    pub fn as_storage_mut(&mut self) -> &mut Vector2D<i64> {
-        &mut self.counts
+    /// Returns the frequency estimate for the provided value.
+    #[inline(always)]
+    pub fn estimate(&self, value: &SketchInput) -> f64 {
+        let hashed_val = hash_it(0, value);
+        self.counts.fast_query_median(hashed_val, |val, row, hash| {
+            let sign_bit_pos = 63 - row;
+            let bit = ((hash >> sign_bit_pos) & 1) as i32;
+            let sign_bit = -(1 - 2 * bit);
+            (sign_bit * (*val)) as f64
+        })
     }
 
+    /// Inserts an observation using a pre-computed hash value.
+    /// Hash value can be reused with other sketches.
+    #[inline(always)]
+    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u64) {
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (63 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            1_i32,
+            hashed_val,
+        );
+    }
+
+    #[inline(always)]
+    pub fn fast_insert_many_with_hash_value(&mut self, hashed_val: u64, many: i32) {
+        self.counts.fast_insert(
+            |counter, value, row| {
+                let bit = (hashed_val >> (63 - row)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                *counter += sign * *value;
+            },
+            many,
+            hashed_val,
+        );
+    }
+
+    /// Returns the frequency estimate using a pre-computed hash value.
+    #[inline(always)]
+    pub fn fast_estimate_with_hash(&self, hashed_val: u64) -> f64 {
+        self.counts.fast_query_median(hashed_val, |val, row, hash| {
+            let sign_bit_pos = 63 - row;
+            let bit = ((hash >> sign_bit_pos) & 1) as i32;
+            let sign_bit = -(1 - 2 * bit);
+            (sign_bit * (*val)) as f64
+        })
+    }
+
+    pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
+        self.estimate(value)
+    }
+}
+
+impl<M> Count<Vector2D<i32>, M> {
     /// Human-friendly helper used by the serializer demo binaries.
     pub fn debug(&self) {
-        for row in 0..self.row {
+        for row in 0..self.counts.rows() {
             println!("row {}: {:?}", row, &self.counts.row_slice(row));
         }
     }
+}
 
-    /// Serializes the sketch into MessagePack bytes.
-    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        to_vec_named(self)
+impl Count<Vector2D<i32>, FastPath> {
+    /// Enables Nitro sampling with the provided rate.
+    pub fn enable_nitro(&mut self, sampling_rate: f64) {
+        self.counts.enable_nitro(sampling_rate);
     }
 
-    /// Convenience alias matching the previous API.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
+    #[inline(always)]
+    pub fn fast_insert_nitro(&mut self, value: &SketchInput) {
+        let rows = self.counts.rows();
+        let delta = self.counts.nitro().delta;
+        if self.counts.nitro().to_skip >= rows {
+            self.counts.reduce_nitro_skip(rows);
+        } else {
+            let hashed = hash_it_to_128(0, value);
+            let mut r = self.counts.nitro().to_skip;
+            loop {
+                let bit = (hashed >> (127 - r)) & 1;
+                let sign = (bit << 1) as i32 - 1;
+                self.counts
+                    .update_by_row(r, hashed, |a, b| *a += b, sign * (delta as i32));
+                self.counts.nitro_mut().draw_geometric();
+                if r + self.counts.nitro_mut().to_skip + 1 >= rows {
+                    break;
+                }
+                r += self.counts.nitro_mut().to_skip + 1;
+            }
+            let temp = self.counts.get_nitro_skip();
+            self.counts.update_nitro_skip((r + temp + 1) - rows);
+        }
+    }
+}
+
+impl NitroTarget for Count<Vector2D<i32>, FastPath> {
+    #[inline(always)]
+    fn rows(&self) -> usize {
+        self.counts.rows()
     }
 
-    /// Deserializes a sketch from MessagePack bytes.
-    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        from_slice(bytes)
-    }
-
-    /// Convenience alias matching the previous API.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
+    #[inline(always)]
+    fn update_row(&mut self, row: usize, hashed: u128, delta: u64) {
+        let bit = (hashed >> (127 - row)) & 1;
+        let sign = (bit << 1) as i32 - 1;
+        self.counts
+            .update_by_row(row, hashed, |a, b| *a += b, sign * (delta as i32));
     }
 }
 
@@ -418,19 +614,9 @@ impl CountL2HH {
         to_vec_named(self)
     }
 
-    /// Convenience alias matching the other sketch APIs.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a CountL2HH sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
-    }
-
-    /// Convenience alias matching the other sketch APIs.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
     }
 }
 
@@ -438,13 +624,13 @@ impl CountL2HH {
 mod tests {
     use super::*;
     use crate::test_utils::{
-        all_counter_zero_i64, all_zero_except_i64, counter_index, sample_uniform_f64,
+        all_counter_zero_i32, all_zero_except_i32, counter_index, sample_uniform_f64,
         sample_zipf_u64,
     };
     use crate::{SketchInput, hash_it_to_128};
     use std::collections::HashMap;
 
-    fn counter_sign(row: usize, key: &SketchInput) -> i64 {
+    fn counter_sign(row: usize, key: &SketchInput) -> i32 {
         let hash = hash_it_to_128(row, key);
         if (hash >> 127) & 1 == 1 { 1 } else { -1 }
     }
@@ -456,9 +642,9 @@ mod tests {
         exponent: f64,
         samples: usize,
         seed: u64,
-    ) -> (Count, HashMap<u64, i64>) {
-        let mut truth = HashMap::<u64, i64>::new();
-        let mut sketch = Count::with_dimensions(rows, cols);
+    ) -> (Count, HashMap<u64, i32>) {
+        let mut truth = HashMap::<u64, i32>::new();
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(rows, cols);
 
         for value in sample_zipf_u64(domain, exponent, samples, seed) {
             let key = SketchInput::U64(value);
@@ -476,13 +662,13 @@ mod tests {
         exponent: f64,
         samples: usize,
         seed: u64,
-    ) -> (Count, HashMap<u64, u64>) {
+    ) -> (Count<Vector2D<i32>, FastPath>, HashMap<u64, u64>) {
         let mut truth = HashMap::<u64, u64>::new();
-        let mut sketch = Count::with_dimensions(rows, cols);
+        let mut sketch = Count::<Vector2D<i32>, FastPath>::with_dimensions(rows, cols);
 
         for value in sample_zipf_u64(domain, exponent, samples, seed) {
             let key = SketchInput::U64(value);
-            sketch.fast_insert(&key);
+            sketch.insert(&key);
             *truth.entry(value).or_insert(0) += 1;
         }
 
@@ -498,7 +684,7 @@ mod tests {
         seed: u64,
     ) -> (Count, HashMap<u64, u64>) {
         let mut truth = HashMap::<u64, u64>::new();
-        let mut sketch = Count::with_dimensions(rows, cols);
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(rows, cols);
 
         for value in sample_uniform_f64(min, max, samples, seed) {
             let key = SketchInput::F64(value);
@@ -516,13 +702,13 @@ mod tests {
         max: f64,
         samples: usize,
         seed: u64,
-    ) -> (Count, HashMap<u64, u64>) {
+    ) -> (Count<Vector2D<i32>, FastPath>, HashMap<u64, u64>) {
         let mut truth = HashMap::<u64, u64>::new();
-        let mut sketch = Count::with_dimensions(rows, cols);
+        let mut sketch = Count::<Vector2D<i32>, FastPath>::with_dimensions(rows, cols);
 
         for value in sample_uniform_f64(min, max, samples, seed) {
             let key = SketchInput::F64(value);
-            sketch.fast_insert(&key);
+            sketch.insert(&key);
             *truth.entry(value.to_bits() as u64).or_insert(0) += 1;
         }
 
@@ -531,15 +717,15 @@ mod tests {
 
     #[test]
     fn default_initializes_expected_dimensions() {
-        let cs = Count::default();
+        let cs = Count::<Vector2D<i32>, RegularPath>::default();
         assert_eq!(cs.rows(), 3);
         assert_eq!(cs.cols(), 4096);
-        all_counter_zero_i64(cs.as_storage());
+        all_counter_zero_i32(cs.as_storage());
     }
 
     #[test]
     fn with_dimensions_uses_custom_sizes() {
-        let cs = Count::with_dimensions(3, 17);
+        let cs = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 17);
         assert_eq!(cs.rows(), 3);
         assert_eq!(cs.cols(), 17);
 
@@ -556,7 +742,7 @@ mod tests {
 
     #[test]
     fn insert_updates_signed_counters_per_row() {
-        let mut sketch = Count::with_dimensions(3, 64);
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 64);
         let key = SketchInput::Str("alpha");
 
         sketch.insert(&key);
@@ -574,7 +760,7 @@ mod tests {
 
     #[test]
     fn fast_insert_produces_consistent_estimates() {
-        let mut fast = Count::with_dimensions(4, 128);
+        let mut fast = Count::<Vector2D<i32>, FastPath>::with_dimensions(4, 128);
 
         let keys = vec![
             SketchInput::Str("alpha"),
@@ -585,11 +771,11 @@ mod tests {
         ];
 
         for key in &keys {
-            fast.fast_insert(key);
+            fast.insert(key);
         }
 
         for key in &keys {
-            let estimate = fast.fast_estimate(key);
+            let estimate = fast.estimate(key);
             assert!(
                 (estimate - 1.0).abs() < f64::EPSILON,
                 "fast estimate for key {key:?} should be 1.0, got {estimate}"
@@ -599,7 +785,7 @@ mod tests {
 
     #[test]
     fn insert_produces_consistent_estimates() {
-        let mut sketch = Count::with_dimensions(3, 64);
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 64);
 
         let keys = vec![
             SketchInput::Str("alpha"),
@@ -624,7 +810,7 @@ mod tests {
 
     #[test]
     fn estimate_recovers_frequency_for_repeated_key() {
-        let mut sketch = Count::with_dimensions(3, 64);
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 64);
         let key = SketchInput::Str("theta");
 
         let repeats = 37;
@@ -641,7 +827,7 @@ mod tests {
 
     #[test]
     fn fast_path_recovers_repeated_insertions() {
-        let mut sketch = Count::with_dimensions(4, 256);
+        let mut sketch = Count::<Vector2D<i32>, FastPath>::with_dimensions(4, 256);
         let keys = vec![
             SketchInput::Str("alpha"),
             SketchInput::Str("beta"),
@@ -652,12 +838,12 @@ mod tests {
 
         for _ in 0..5 {
             for key in &keys {
-                sketch.fast_insert(key);
+                sketch.insert(key);
             }
         }
 
         for key in &keys {
-            let estimate = sketch.fast_estimate(key);
+            let estimate = sketch.estimate(key);
             assert!(
                 (estimate - 5.0).abs() < f64::EPSILON,
                 "fast estimate for key {key:?} should be 5.0, got {estimate}"
@@ -667,8 +853,8 @@ mod tests {
 
     #[test]
     fn merge_adds_counters_element_wise() {
-        let mut left = Count::with_dimensions(2, 32);
-        let mut right = Count::with_dimensions(2, 32);
+        let mut left = Count::<Vector2D<i32>, RegularPath>::with_dimensions(2, 32);
+        let mut right = Count::<Vector2D<i32>, RegularPath>::with_dimensions(2, 32);
         let key = SketchInput::Str("delta");
 
         left.insert(&key);
@@ -690,8 +876,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "dimension mismatch while merging CountMin sketches")]
     fn merge_requires_matching_dimensions() {
-        let mut left = Count::with_dimensions(2, 32);
-        let right = Count::with_dimensions(3, 32);
+        let mut left = Count::<Vector2D<i32>, RegularPath>::with_dimensions(2, 32);
+        let right = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 32);
         left.merge(&right);
     }
 
@@ -760,7 +946,7 @@ mod tests {
     // end of 9
     #[test]
     fn cs_regular_path_correctness() {
-        let mut sk = Count::default();
+        let mut sk = Count::<Vector2D<i32>, RegularPath>::default();
         // insert 0~9
         for i in 0..10 {
             sk.insert(&SketchInput::I32(i));
@@ -938,7 +1124,7 @@ mod tests {
             data[0xEC0 + sk.col * 2]
         );
         // other remains zero
-        all_zero_except_i64(
+        all_zero_except_i32(
             sk.as_storage(),
             vec![
                 0xE3D,
@@ -1149,7 +1335,7 @@ mod tests {
             data[0xEC0 + sk.col * 2]
         );
         // other remains zero
-        all_zero_except_i64(
+        all_zero_except_i32(
             sk.as_storage(),
             vec![
                 0xE3D,
@@ -1197,10 +1383,10 @@ mod tests {
 
     #[test]
     fn cs_fast_path_correctness() {
-        let mut sk = Count::default();
+        let mut sk = Count::<Vector2D<i32>, FastPath>::default();
         // insert 0~9
         for i in 0..10 {
-            sk.fast_insert(&SketchInput::I32(i));
+            sk.insert(&SketchInput::I32(i));
         }
         let data = sk.as_storage().as_slice();
         // some counters are 1
@@ -1375,7 +1561,7 @@ mod tests {
             data[0x687 + sk.col * 2]
         );
         // others are 0
-        all_zero_except_i64(
+        all_zero_except_i32(
             sk.as_storage(),
             vec![
                 0xE3D,
@@ -1412,7 +1598,7 @@ mod tests {
         );
         // insert 0~9 again
         for i in 0..10 {
-            sk.fast_insert(&SketchInput::I32(i));
+            sk.insert(&SketchInput::I32(i));
         }
         let data = sk.as_storage().as_slice();
         // some counters are 2
@@ -1587,7 +1773,7 @@ mod tests {
             data[0x687 + sk.col * 2]
         );
         // others are still 0
-        all_zero_except_i64(
+        all_zero_except_i32(
             sk.as_storage(),
             vec![
                 0xE3D,
@@ -1625,10 +1811,10 @@ mod tests {
         // check estimate for 0~9 is 2
         for i in 0..10 {
             assert_eq!(
-                sk.fast_estimate(&SketchInput::I32(i)),
+                sk.estimate(&SketchInput::I32(i)),
                 2.0,
                 "estimate for {i} should be 2.0, but get {}",
-                sk.fast_estimate(&SketchInput::I32(i))
+                sk.estimate(&SketchInput::I32(i))
             )
         }
     }
@@ -1678,7 +1864,7 @@ mod tests {
         let correct_lower_bound = keys.len() as f64 * (1.0 - delta);
         let mut within_count = 0;
         for key in keys {
-            let est = sk.fast_estimate(&SketchInput::U64(*key));
+            let est = sk.estimate(&SketchInput::U64(*key));
             if (est - (*truth.get(key).unwrap() as f64)).abs() < error_bound {
                 within_count += 1;
             }
@@ -1739,7 +1925,7 @@ mod tests {
         let correct_lower_bound = keys.len() as f64 * (1.0 - delta);
         let mut within_count = 0;
         for key in keys {
-            let est = sk.fast_estimate(&SketchInput::U64(*key));
+            let est = sk.estimate(&SketchInput::U64(*key));
             if (est - (*truth.get(key).unwrap() as f64)).abs() < error_bound {
                 within_count += 1;
             }
@@ -1752,7 +1938,7 @@ mod tests {
 
     #[test]
     fn count_sketch_round_trip_serialization() {
-        let mut sketch = Count::with_dimensions(3, 8);
+        let mut sketch = Count::<Vector2D<i32>, RegularPath>::with_dimensions(3, 8);
         sketch.insert(&SketchInput::U64(42));
         sketch.insert(&SketchInput::U64(7));
 
@@ -1760,7 +1946,8 @@ mod tests {
         assert!(!encoded.is_empty());
         let data_copied = encoded.clone();
 
-        let decoded = Count::deserialize_from_bytes(&data_copied).expect("deserialize Count");
+        let decoded = Count::<Vector2D<i32>, RegularPath>::deserialize_from_bytes(&data_copied)
+            .expect("deserialize Count");
 
         assert_eq!(sketch.rows(), decoded.rows());
         assert_eq!(sketch.cols(), decoded.cols());

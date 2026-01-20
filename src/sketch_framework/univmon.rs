@@ -215,19 +215,9 @@ impl UnivMon {
         to_vec_named(self)
     }
 
-    /// Convenience alias for backwards-compatible APIs.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a UnivMon sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
-    }
-
-    /// Convenience alias for backwards-compatible APIs.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
     }
 }
 

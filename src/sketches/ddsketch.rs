@@ -1,17 +1,21 @@
 use crate::common::structures::Vector1D;
+use rmp_serde::decode::Error as RmpDecodeError;
+use rmp_serde::encode::Error as RmpEncodeError;
 use rmp_serde::{from_slice, to_vec_named};
 use serde::{Deserialize, Serialize};
 
-// DDsketch implementation based on the paper and algorithms provided:
-// https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
+/// DDSketch implementation based on:
+/// https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
+
+// Mumber of buckets to grow by when expanding.
+const GROW_CHUNK: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Buckets {
     counts: Vector1D<u64>,
-    offset: i32, // offset for the indexing of counts - vectors don't support negative indices
+    offset: i32,
 }
 
-// Buckets created using vec![] for counts and 0 for offset
 impl Buckets {
     fn new() -> Self {
         Self {
@@ -20,7 +24,18 @@ impl Buckets {
         }
     }
 
-    // Get the current range of bucket indices stored.
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    // not used in current version
+    // #[inline(always)]
+    // fn len(&self) -> usize {
+    //     self.counts.len()
+    // }
+
+    #[inline(always)]
     fn range(&self) -> Option<(i32, i32)> {
         if self.counts.is_empty() {
             None
@@ -31,80 +46,56 @@ impl Buckets {
         }
     }
 
-    // checking to see if bucket for k exists, if not grow the counts vector accordingly
+    /// Ensure bucket k exists, using growth in chunks.
+    #[inline(always)]
     fn ensure(&mut self, k: i32) {
         if self.counts.is_empty() {
-            self.counts = Vector1D::from_vec(vec![0u64]);
-            self.offset = k;
+            self.counts = Vector1D::from_vec(vec![0u64; GROW_CHUNK]);
+            self.offset = k - (GROW_CHUNK as i32 / 2);
             return;
         }
 
         let (left, right) = self.range().unwrap();
 
         if k < left {
-            let grow = (left - k) as usize;
+            let needed = (left - k) as usize;
+            let grow = needed.max(GROW_CHUNK);
+
             let mut v = vec![0u64; grow];
             v.extend_from_slice(self.counts.as_slice());
+
             self.counts = Vector1D::from_vec(v);
-            self.offset = k;
+            self.offset -= grow as i32;
         } else if k > right {
-            let grow = (k - right) as usize;
+            let needed = (k - right) as usize;
+            let grow = needed.max(GROW_CHUNK);
+
             let mut v = self.counts.clone().into_vec();
             v.resize(v.len() + grow, 0);
             self.counts = Vector1D::from_vec(v);
         }
     }
 
-    // add one count to bucket k
+    #[inline(always)]
     fn add_one(&mut self, k: i32) {
+        // this is the method that gets called on every sample insertion
+        let idx_i32 = k - self.offset;
+
+        if idx_i32 >= 0 {
+            let idx = idx_i32 as usize;
+            let slice = self.counts.as_mut_slice();
+            if idx < slice.len() {
+                unsafe {
+                    *slice.as_mut_ptr().add(idx) += 1;
+                }
+                return;
+            }
+        }
+
+        // TThis is the method that gets called only on rare expansions
         self.ensure(k);
         let idx = (k - self.offset) as usize;
         self.counts.as_mut_slice()[idx] += 1;
-    }
-
-    // Iterate over (bucket_index, count) and skip zero bins.
-    fn iter_nonzero(&self) -> impl Iterator<Item = (i32, u64)> + '_ {
-        self.counts
-            .as_slice()
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| **c > 0) // skip zero counts
-            .map(move |(i, c)| (self.offset + i as i32, *c))
-    }
-
-    // merge another Buckets into this one
-    fn merge(&mut self, other: &Buckets) {
-        if other.counts.is_empty() {
-            return;
-        }
-        if self.counts.is_empty() {
-            *self = other.clone();
-            return;
-        }
-
-        let (self_left, self_right) = self.range().unwrap();
-        let (other_left, other_right) = other.range().unwrap();
-
-        let new_left = self_left.min(other_left);
-        let new_right = self_right.max(other_right);
-        let new_len = (new_right - new_left + 1) as usize;
-
-        let mut merged = vec![0u64; new_len];
-
-        // copy the self counts
-        for (i, &c) in self.counts.as_slice().iter().enumerate() {
-            let k = self_left + i as i32;
-            merged[(k - new_left) as usize] += c;
-        }
-
-        // add other counts after fixing index
-        for (i, &c) in other.counts.as_slice().iter().enumerate() {
-            let k = other_left + i as i32;
-            merged[(k - new_left) as usize] += c;
-        }
-
-        self.counts = Vector1D::from_vec(merged);
-        self.offset = new_left;
     }
 }
 
@@ -113,6 +104,8 @@ pub struct DDSketch {
     alpha: f64,
     gamma: f64,
     log_gamma: f64,
+    inv_log_gamma: f64,
+
     store: Buckets,
     count: u64,
     sum: f64,
@@ -125,10 +118,13 @@ impl DDSketch {
         assert!((0.0..1.0).contains(&alpha), "alpha must be in (0,1)");
         let gamma = (1.0 + alpha) / (1.0 - alpha);
         let log_gamma = gamma.ln();
+        let inv_log_gamma = 1.0 / log_gamma;
+
         Self {
             alpha,
             gamma,
             log_gamma,
+            inv_log_gamma,
             store: Buckets::new(),
             count: 0,
             sum: 0.0,
@@ -137,21 +133,21 @@ impl DDSketch {
         }
     }
 
-    // serialize sketch into bytes using MessagePack format.
-    pub fn serialize(&self) -> Option<Vec<u8>> {
-        to_vec_named(self).ok()
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        to_vec_named(self)
     }
 
-    // deserialize sketch from bytes using MessagePack format.
-    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        from_slice(bytes).ok()
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        from_slice(bytes)
     }
 
     /// Add a sample.
+    #[inline(always)]
     pub fn add(&mut self, v: f64) {
         if !(v.is_finite() && v > 0.0) {
             return;
         }
+
         self.count += 1;
         self.sum += v;
         if v < self.min {
@@ -160,11 +156,12 @@ impl DDSketch {
         if v > self.max {
             self.max = v;
         }
-        let idx = self.key_for(v);
-        self.store.add_one(idx);
+
+        let k = self.key_for(v);
+        self.store.add_one(k);
     }
 
-    // Quantile estimate using bin representative based on logarithmic binning.
+    /// Quantile estimate for quantile q in [0, 1].
     pub fn get_value_at_quantile(&self, q: f64) -> Option<f64> {
         if self.count == 0 || q.is_nan() {
             return None;
@@ -179,12 +176,18 @@ impl DDSketch {
         let rank = (q * self.count as f64).ceil() as u64;
         let mut seen = 0u64;
 
-        for (bin, c) in self.store.iter_nonzero() {
+        let slice = self.store.counts.as_slice();
+        let offset = self.store.offset;
+
+        for i in 0..slice.len() {
+            let c = slice[i];
+            if c == 0 {
+                continue;
+            }
             seen += c;
             if seen >= rank {
-                // found the bin
+                let bin = offset + i as i32;
                 let mut v = self.bin_representative(bin);
-                // keep within min/max
                 if v < self.min {
                     v = self.min;
                 }
@@ -194,6 +197,7 @@ impl DDSketch {
                 return Some(v);
             }
         }
+
         Some(self.max)
     }
 
@@ -217,9 +221,8 @@ impl DDSketch {
         }
     }
 
-    // Merge another DDSketch into this one
+    /// Merge another DDSketch into this one.
     pub fn merge(&mut self, other: &DDSketch) {
-        // sanity: same parameters
         debug_assert!((self.alpha - other.alpha).abs() < 1e-12);
         debug_assert!((self.gamma - other.gamma).abs() < 1e-12);
 
@@ -227,15 +230,7 @@ impl DDSketch {
             return;
         }
         if self.count == 0 {
-            // copy everything over
-            self.alpha = other.alpha;
-            self.gamma = other.gamma;
-            self.log_gamma = other.log_gamma;
-            self.store = other.store.clone();
-            self.count = other.count;
-            self.sum = other.sum;
-            self.min = other.min;
-            self.max = other.max;
+            *self = other.clone();
             return;
         }
 
@@ -247,18 +242,70 @@ impl DDSketch {
         if other.max > self.max {
             self.max = other.max;
         }
-        self.store.merge(&other.store);
+
+        // Merge bucket vectors
+        self.merge_buckets_from(other);
     }
 
-    // mapping value to bin key
+    #[inline(always)]
     fn key_for(&self, v: f64) -> i32 {
         debug_assert!(v > 0.0);
-        (v.ln() / self.log_gamma).floor() as i32
+        (v.ln() * self.inv_log_gamma).floor() as i32
     }
 
-    // mapping bin key to representative value
+    #[inline]
     fn bin_representative(&self, k: i32) -> f64 {
         self.gamma.powf(k as f64 + 0.5)
+    }
+
+    fn merge_buckets_from(&mut self, other: &DDSketch) {
+        if other.store.is_empty() {
+            return;
+        }
+        if self.store.is_empty() {
+            self.store = other.store.clone();
+            return;
+        }
+
+        let (self_l, self_r) = self.store.range().unwrap();
+        let (other_l, other_r) = other.store.range().unwrap();
+
+        let new_l = self_l.min(other_l);
+        let new_r = self_r.max(other_r);
+        let new_len = (new_r - new_l + 1) as usize;
+
+        let mut merged = vec![0u64; new_len];
+
+        // Copy self
+        for (i, &c) in self.store.counts.as_slice().iter().enumerate() {
+            let k = self_l + i as i32;
+            merged[(k - new_l) as usize] += c;
+        }
+
+        // Add other
+        for (i, &c) in other.store.counts.as_slice().iter().enumerate() {
+            let k = other_l + i as i32;
+            merged[(k - new_l) as usize] += c;
+        }
+
+        self.store.counts = Vector1D::from_vec(merged);
+        self.store.offset = new_l;
+    }
+}
+
+impl Clone for DDSketch {
+    fn clone(&self) -> Self {
+        Self {
+            alpha: self.alpha,
+            gamma: self.gamma,
+            log_gamma: self.log_gamma,
+            inv_log_gamma: self.inv_log_gamma,
+            store: self.store.clone(),
+            count: self.count,
+            sum: self.sum,
+            min: self.min,
+            max: self.max,
+        }
     }
 }
 
@@ -638,13 +685,14 @@ mod tests {
             s.add(v);
         }
 
-        let encoded = s.serialize().expect("DDSketch serialization fail"); // serialize to bytes
+        let encoded = s.serialize_to_bytes().expect("DDSketch serialization fail"); // serialize to bytes
         assert!(
             !encoded.is_empty(),
             "encoded bytes should not be empty for DDSketch"
         );
 
-        let decoded = DDSketch::deserialize(&encoded).expect("DDSketch deserialization fail"); // deserialize back
+        let decoded =
+            DDSketch::deserialize_from_bytes(&encoded).expect("DDSketch deserialization fail"); // deserialize back
 
         // basic invariants - conditions should match, else it fails
         assert_eq!(decoded.get_count(), s.get_count()); // counts should match

@@ -5,7 +5,7 @@
 //! HHItem defined in crate::common::input::HHItem
 
 use crate::common::input::HHItem;
-use crate::common::{CommonHeap, CommonMinHeap};
+use crate::common::{CommonHeap, KeepSmallest};
 use crate::{HeapItem, SketchInput, hash_it_to_64, hash_item_to_64, input_to_owned};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 /// Modern replacement for TopKHeap using the generic CommonHeap structure.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HHHeap {
-    heap: CommonHeap<HHItem, CommonMinHeap>,
+    heap: CommonHeap<HHItem, KeepSmallest>,
     positions: HashMap<u64, Vec<(HeapItem, usize)>>,
     k: usize,
 }
@@ -171,7 +171,7 @@ impl HHHeap {
 mod tests {
     use super::*;
     use crate::{
-        CommonHeap, CommonHeapOrder, CommonMaxHeap, CommonMinHeap, HeapItem, SketchInput,
+        CommonHeap, CommonHeapOrder, HeapItem, KeepLargest, KeepSmallest, SketchInput,
         common::input::HHItem,
     };
 
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_min_heap_basic() {
-        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        let mut heap = CommonHeap::<i32, KeepSmallest>::new_min(5);
         heap.push(5);
         heap.push(3);
         heap.push(7);
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_max_heap_basic() {
-        let mut heap = CommonHeap::<i32, CommonMaxHeap>::new_max(5);
+        let mut heap = CommonHeap::<i32, KeepLargest>::new_max(5);
         heap.push(5);
         heap.push(3);
         heap.push(7);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_bounded_heap_capacity() {
-        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<i32, KeepSmallest>::new_min(3);
 
         heap.push(5);
         heap.push(3);
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_update_at() {
-        let mut heap = CommonHeap::<i32, CommonMinHeap>::new_min(5);
+        let mut heap = CommonHeap::<i32, KeepSmallest>::new_min(5);
         heap.push(10);
         heap.push(20);
         heap.push(5);
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_custom_struct_with_ord() {
-        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, KeepSmallest>::new_min(3);
         heap.push(HHItem::new(SketchInput::String("five".to_owned()), 5));
         heap.push(HHItem::new(SketchInput::String("three".to_owned()), 3));
         heap.push(HHItem::new(SketchInput::String("seven".to_owned()), 7));
@@ -312,7 +312,7 @@ mod tests {
         // Use min-heap so smallest is at root and can be evicted
 
         // Create a min-heap with capacity 3 to keep top-3 items
-        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, KeepSmallest>::new_min(3);
 
         // Insert items (simulating TopKHeap behavior)
         for i in 1..=5 {
@@ -342,8 +342,8 @@ mod tests {
         use std::mem::size_of;
 
         let vec_size = size_of::<Vec<u64>>();
-        let heap_min_size = size_of::<CommonHeap<u64, CommonMinHeap>>();
-        let heap_max_size = size_of::<CommonHeap<u64, CommonMaxHeap>>();
+        let heap_min_size = size_of::<CommonHeap<u64, KeepSmallest>>();
+        let heap_max_size = size_of::<CommonHeap<u64, KeepLargest>>();
 
         println!("Vec<u64> size: {vec_size}");
         println!("Heap<u64, MinHeap> size: {heap_min_size}");
@@ -391,11 +391,11 @@ mod tests {
         // This test demonstrates EXACT TopKHeap behavior using generic Heap
 
         // TopKHeap::init_heap(3) equivalent:
-        let mut heap = CommonHeap::<HHItem, CommonMinHeap>::new_min(3);
+        let mut heap = CommonHeap::<HHItem, KeepSmallest>::new_min(3);
 
         // TopKHeap::update("key-1", 1) equivalent:
         let find_and_update =
-            |heap: &mut CommonHeap<HHItem, CommonMinHeap>, key: &str, count: i64| {
+            |heap: &mut CommonHeap<HHItem, KeepSmallest>, key: &str, count: i64| {
                 // TopKHeap::find() equivalent:
                 let idx_opt = heap
                     .iter()

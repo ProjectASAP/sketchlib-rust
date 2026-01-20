@@ -1,5 +1,6 @@
 use crate::{
-    Count, CountMin, HllDf, LASTSTATE, SketchInput, Vector1D, hash_it_to_128, input::AnySketch,
+    Count, CountMin, FastPath, HllDf, LASTSTATE, SketchInput, Vector1D, Vector2D, hash_it_to_128,
+    input::AnySketch,
 };
 
 pub struct HashLayer {
@@ -9,8 +10,8 @@ pub struct HashLayer {
 impl Default for HashLayer {
     fn default() -> Self {
         Self::new(vec![
-            AnySketch::CountMin(CountMin::default()),
-            AnySketch::Count(Count::default()),
+            AnySketch::CountMin(CountMin::<Vector2D<i32>, FastPath>::default()),
+            AnySketch::Count(Count::<Vector2D<i32>, FastPath>::default()),
             AnySketch::HllDf(HllDf::default()),
         ])
     }
@@ -356,8 +357,10 @@ mod tests {
     fn test_hashlayer_custom_sketches() {
         // Create a custom HashLayer with specific sketch configurations
         let sketches = vec![
-            AnySketch::CountMin(CountMin::with_dimensions(5, 2048)),
-            AnySketch::Count(Count::with_dimensions(5, 2048)),
+            AnySketch::CountMin(CountMin::<Vector2D<i32>, FastPath>::with_dimensions(
+                5, 2048,
+            )),
+            AnySketch::Count(Count::<Vector2D<i32>, FastPath>::with_dimensions(5, 2048)),
         ];
 
         let mut layer = HashLayer::new(sketches);

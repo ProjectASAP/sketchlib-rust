@@ -1,4 +1,5 @@
 use crate::hash_it_to_64;
+use crate::structures::fixed_structure::HllBucketList;
 use crate::{LASTSTATE, SketchInput};
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
@@ -15,7 +16,8 @@ const HLL_P_MASK: u64 = (NUM_REGISTERS as u64) - 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperLogLog {
-    registers: Vec<u8>,
+    // registers: Vec<u8>,
+    registers: HllBucketList,
 }
 
 impl Default for HyperLogLog {
@@ -27,7 +29,8 @@ impl Default for HyperLogLog {
 impl HyperLogLog {
     pub fn new() -> Self {
         HyperLogLog {
-            registers: vec![0_u8; NUM_REGISTERS],
+            // registers: vec![0_u8; NUM_REGISTERS],
+            registers: HllBucketList::default(),
         }
     }
 
@@ -67,7 +70,8 @@ impl HyperLogLog {
         for i in 0..NUM_REGISTERS {
             // let pow2 = 0x1 << self.registers[i];
             // let inv_pow2 = 1.0 / (pow2 as f64);
-            let reg_val = *self.registers.get(i).unwrap();
+            // let reg_val = *self.registers.get(i).unwrap();
+            let reg_val = self.registers[i];
             let inv_pow2 = 2f64.powi(-(reg_val as i32));
             z += inv_pow2;
         }
@@ -83,7 +87,8 @@ impl HyperLogLog {
         if est <= m * 5.0 / 2.0 {
             let mut zero_count = 0;
             for i in 0..NUM_REGISTERS {
-                let reg_val = *self.registers.get(i).unwrap();
+                // let reg_val = *self.registers.get(i).unwrap();
+                let reg_val = self.registers[i];
                 if reg_val == 0 {
                     zero_count += 1;
                 }
@@ -104,25 +109,16 @@ impl HyperLogLog {
         to_vec_named(self)
     }
 
-    /// Convenience alias matching the previous API shape used elsewhere.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
-    }
-
-    /// Convenience alias matching the previous API shape used elsewhere.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HllDf {
-    registers: Vec<u8>,
+    // registers: Vec<u8>,
+    registers: HllBucketList,
 }
 
 impl Default for HllDf {
@@ -134,7 +130,8 @@ impl Default for HllDf {
 impl HllDf {
     pub fn new() -> Self {
         HllDf {
-            registers: vec![0_u8; NUM_REGISTERS],
+            // registers: vec![0_u8; NUM_REGISTERS],
+            registers: HllBucketList::default(),
         }
     }
 
@@ -172,7 +169,10 @@ impl HllDf {
     #[inline]
     fn get_histogram(&self) -> [u32; HLL_Q + 2] {
         let mut histogram = [0; HLL_Q + 2];
-        for r in self.registers.as_slice() {
+        // for r in self.registers.as_slice() {
+        //     histogram[*r as usize] += 1;
+        // }
+        for r in self.registers.into_iter() {
             histogram[*r as usize] += 1;
         }
         histogram
@@ -237,26 +237,16 @@ impl HllDf {
     pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
         to_vec_named(self)
     }
-
-    /// Convenience alias matching previous APIs.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
-    }
-
-    /// Convenience alias matching previous APIs.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HllDs {
-    registers: Vec<u8>,
+    // registers: Vec<u8>,
+    registers: HllBucketList,
     kxq0: f64,
     kxq1: f64,
     est: f64,
@@ -271,7 +261,8 @@ impl Default for HllDs {
 impl HllDs {
     pub fn new() -> Self {
         HllDs {
-            registers: vec![0_u8; NUM_REGISTERS],
+            // registers: vec![0_u8; NUM_REGISTERS],
+            registers: HllBucketList::default(),
             kxq0: NUM_REGISTERS as f64,
             kxq1: 0.0,
             est: 0.0,
@@ -289,7 +280,8 @@ impl HllDs {
         let hashed_val = hashed as u64;
         let bucket_num = ((hashed_val >> HLL_Q) & HLL_P_MASK) as usize;
         let leading_zero = ((hashed_val << HLL_P) + HLL_P_MASK).leading_zeros() as u8 + 1;
-        let old_value = *self.registers.get(bucket_num).unwrap();
+        // let old_value = *self.registers.get(bucket_num).unwrap();
+        let old_value = self.registers[bucket_num];
         let new_value = leading_zero;
         if new_value > old_value {
             self.registers[bucket_num] = leading_zero;
@@ -320,19 +312,9 @@ impl HllDs {
         to_vec_named(self)
     }
 
-    /// Convenience alias matching previous APIs.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
-    }
-
-    /// Convenience alias matching previous APIs.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
     }
 }
 

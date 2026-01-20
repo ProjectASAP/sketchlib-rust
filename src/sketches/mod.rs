@@ -6,8 +6,12 @@ pub mod count;
 pub use count::Count;
 pub use count::CountL2HH;
 
+pub mod mode;
+pub use mode::{FastPath, RegularPath};
+
 pub mod countmin;
-pub use countmin::CountMin;
+pub use crate::MatrixStorage;
+pub use countmin::{CountMin, QUICKSTART_COL_NUM, QUICKSTART_ROW_NUM, XLCountMin};
 // pub use countmin::MicroScopeCM;
 
 pub mod elastic;
@@ -25,6 +29,8 @@ pub use hll::HyperLogLog;
 
 pub mod kll;
 pub use kll::KLL;
+
+pub mod kmv;
 
 pub mod locher;
 // pub use locher::LocherSketch;

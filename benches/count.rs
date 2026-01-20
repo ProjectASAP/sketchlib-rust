@@ -1,73 +1,42 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng};
-use sketchlib_rust::{Count, SketchInput};
+use sketchlib_rust::{Count, FastPath, FixedMatrix, SketchInput, Vector2D};
 
-const SAMPLE_COUNT: usize = 16_384;
+const SAMPLE_COUNT: usize = 1_000_000;
 const RNG_SEED: u64 = 0x5eed_c0de_1234_5678;
-const DEFAULT_ROW_NUM: usize = 5;
-// const DEFAULT_COL_NUM: usize = 32768;
-// const DEFAULT_ROW_NUM: usize = 3;
-const DEFAULT_COL_NUM: usize = 4096;
+const ROWS: usize = 5;
+const COLS: usize = 2048;
 
-fn build_keys() -> Vec<SketchInput<'static>> {
+fn build_keys() -> Vec<i64> {
     let mut rng = StdRng::seed_from_u64(RNG_SEED);
-    (0..SAMPLE_COUNT)
-        .map(|_| SketchInput::U64(rng.random::<u64>()))
-        .collect()
+    (0..SAMPLE_COUNT).map(|_| rng.random::<i64>()).collect()
 }
 
 fn bench_count(c: &mut Criterion) {
     let keys = build_keys();
-    let mut group = c.benchmark_group("count_default");
+    let mut group = c.benchmark_group("count_storage_compare");
 
-    group.bench_function("insert_only", |b| {
+    group.bench_function("insert_1m_i64_fixedmatrix", |b| {
+        b.iter_with_setup(Count::<FixedMatrix, FastPath>::default, |mut sketch| {
+            for &key in &keys {
+                let input = SketchInput::I64(key);
+                sketch.insert(&input);
+            }
+            black_box(sketch);
+        });
+    });
+
+    group.bench_function("insert_1m_i64_vector2d", |b| {
         b.iter_with_setup(
-            || Count::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM),
+            || Count::<Vector2D<i32>, FastPath>::with_dimensions(ROWS, COLS),
             |mut sketch| {
-                for key in &keys {
-                    sketch.insert(key);
+                for &key in &keys {
+                    let input = SketchInput::I64(key);
+                    sketch.insert(&input);
                 }
                 black_box(sketch);
             },
         );
-    });
-
-    group.bench_function("fast_insert_only", |b| {
-        b.iter_with_setup(
-            || Count::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM),
-            |mut sketch| {
-                for key in &keys {
-                    sketch.fast_insert(key);
-                }
-                black_box(sketch);
-            },
-        );
-    });
-
-    let mut insert_prefilled = Count::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM);
-    for key in &keys {
-        insert_prefilled.insert(key);
-    }
-
-    let mut fast_prefilled = Count::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM);
-    for key in &keys {
-        fast_prefilled.fast_insert(key);
-    }
-
-    group.bench_function("estimate", |b| {
-        b.iter(|| {
-            for key in &keys {
-                black_box(insert_prefilled.estimate(key));
-            }
-        });
-    });
-
-    group.bench_function("fast_estimate", |b| {
-        b.iter(|| {
-            for key in &keys {
-                black_box(fast_prefilled.fast_estimate(key));
-            }
-        });
     });
 
     group.finish();

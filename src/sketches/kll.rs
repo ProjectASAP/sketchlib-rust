@@ -2,6 +2,8 @@
 //! https://github.com/dgryski/go-kll
 
 use rand::{Rng, rng};
+use rmp_serde::decode::Error as RmpDecodeError;
+use rmp_serde::encode::Error as RmpEncodeError;
 use serde::{Deserialize, Serialize};
 
 use crate::{SketchInput, Vector1D};
@@ -390,13 +392,13 @@ impl KLL {
     }
 
     /// Serialize the sketch into MessagePack bytes.
-    pub fn serialize(&self) -> Option<Vec<u8>> {
-        rmp_serde::to_vec(self).ok()
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
+        rmp_serde::to_vec(self)
     }
 
     /// Deserialize a sketch from MessagePack bytes.
-    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        rmp_serde::from_slice(bytes).ok().map(|mut sketch: KLL| {
+    pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
+        rmp_serde::from_slice(bytes).map(|mut sketch: KLL| {
             sketch.rebuild_capacity_cache();
             sketch
         })
@@ -806,10 +808,10 @@ mod tests {
             sketch.update(&SketchInput::F64(*value)).unwrap();
         }
 
-        let bytes = sketch.serialize().expect("serialize KLL with rmp");
+        let bytes = sketch.serialize_to_bytes().expect("serialize KLL with rmp");
         assert!(!bytes.is_empty(), "serialized bytes should not be empty");
 
-        let restored = KLL::deserialize(&bytes).expect("deserialize KLL with rmp");
+        let restored = KLL::deserialize_from_bytes(&bytes).expect("deserialize KLL with rmp");
         assert_eq!(sketch.k, restored.k);
         assert_eq!(sketch.m, restored.m);
         assert_eq!(sketch.num_levels, restored.num_levels);

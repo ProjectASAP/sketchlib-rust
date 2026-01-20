@@ -8,4 +8,10 @@ pub mod vector3d;
 pub use vector3d::Vector3D;
 
 pub mod heap;
-pub use heap::{CommonHeap, CommonHeapOrder, CommonMaxHeap, CommonMinHeap};
+pub use heap::{CommonHeap, CommonHeapOrder, KeepLargest, KeepSmallest};
+
+pub mod matrix_storage;
+pub use matrix_storage::MatrixStorage;
+
+pub mod fixed_structure;
+pub use fixed_structure::FixedMatrix;

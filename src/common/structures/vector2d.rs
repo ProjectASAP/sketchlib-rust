@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 
-use crate::{Nitro, compute_median_inline_f64};
+use crate::{MatrixStorage, Nitro, compute_median_inline_f64};
 /// Shared thin wrapper over `Vec<T>` tailored for sketches.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vector2D<T> {
@@ -106,11 +106,13 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns the number of rows.
+    #[inline(always)]
     pub fn rows(&self) -> usize {
         self.rows
     }
 
     /// Returns the number of columns.
+    #[inline(always)]
     pub fn cols(&self) -> usize {
         self.cols
     }
@@ -125,25 +127,30 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns the total number of elements.
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.data.len() == 0
     }
 
     /// Provides immutable access to the flattened storage.
+    #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         &self.data
     }
 
     /// Provides mutable access to the flattened storage.
+    #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
     }
 
     /// Returns a reference to a cell when it exists.
+    #[inline(always)]
     pub fn get(&self, row: usize, col: usize) -> Option<&T> {
         if row < self.rows && col < self.cols {
             Some(&self.data[row * self.cols + col])
@@ -153,6 +160,7 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns a mutable reference to a cell when it exists.
+    #[inline(always)]
     pub fn get_mut(&mut self, row: usize, col: usize) -> Option<&mut T> {
         if row < self.rows && col < self.cols {
             Some(&mut self.data[row * self.cols + col])
@@ -202,16 +210,26 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// Simple increment (row-independent):
-    /// ```ignore
-    /// sketch.fast_insert(|counter, value, _| *counter += value, 1, hash);
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let mut sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// sketch.fast_insert(|counter, value, _| *counter += *value, 1i64, hash);
     /// ```
     ///
     /// Row-dependent operation (e.g., Count sketch with sign bits):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let mut sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// sketch.fast_insert(|counter, value, row| {
-    ///     let sign = compute_sign(hash, row);
-    ///     *counter += sign * value;
-    /// }, 1, hash);
+    ///     let sign = if ((hash >> row) & 1) == 0 { 1i64 } else { -1i64 };
+    ///     *counter += sign * *value;
+    /// }, 1i64, hash);
     /// ```
     #[inline(always)]
     pub fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: u128)
@@ -257,6 +275,7 @@ impl<T> Vector2D<T> {
 
     /// Reads a single counter by `(row, col)`.
     /// seems to be faster than [][] operation
+    #[inline(always)]
     pub fn query_one_counter(&self, row: usize, col: usize) -> T
     where
         T: Clone,
@@ -272,13 +291,25 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// Simple min (row-independent):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// let min = sketch.fast_query_min(hash, |val, _, _| *val);
+    /// # let _ = min;
     /// ```
     ///
     /// Row-dependent with transformation:
-    /// ```ignore
-    /// let min = sketch.fast_query_min(hash, |val, row, _| *val as f64 * weight(row));
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// let min = sketch.fast_query_min(hash, |val, row, _| *val - row as i64);
+    /// # let _ = min;
     /// ```
     #[inline(always)]
     pub fn fast_query_min<F, R>(&self, hashed_val: u128, op: F) -> R
@@ -313,17 +344,28 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// Simple median (row-independent):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// let median = sketch.fast_query_median(hash, |val, _, _| *val as f64);
+    /// # let _ = median;
     /// ```
     ///
     /// Row-dependent (e.g., Count sketch with sign bits):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// let median = sketch.fast_query_median(hash, |val, row, hash| {
-    ///     let sign_bit = (hash >> (127 - row)) & 1;
-    ///     let sign = -(1 - 2 * sign_bit as i64) as f64;
-    ///     *val as f64 * sign
+    ///     let sign = if ((hash >> row) & 1) == 0 { 1.0 } else { -1.0 };
+    ///     *val as f64 * sign * (row as f64 + 1.0)
     /// });
+    /// # let _ = median;
     /// ```
     #[inline(always)]
     pub fn fast_query_median<F>(&self, hashed_val: u128, op: F) -> f64
@@ -352,13 +394,25 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// Simple max (row-independent):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// let max = sketch.fast_query_max(hash, |val, _, _| *val);
+    /// # let _ = max;
     /// ```
     ///
     /// Row-dependent with transformation:
-    /// ```ignore
-    /// let max = sketch.fast_query_max(hash, |val, row, _| *val as f64 / (row + 1) as f64);
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// let max = sketch.fast_query_max(hash, |val, row, _| *val + row as i64);
+    /// # let _ = max;
     /// ```
     #[inline(always)]
     pub fn fast_query_max<F, R>(&self, hashed_val: u128, op: F) -> R
@@ -392,9 +446,15 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// With complex counter type:
-    /// ```ignore
-    /// let min = sketch.fast_query_min_with_key(hash, &query_key,
-    ///     |counter, key, _, _| counter.estimate(key));
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// # let query_key = ();
+    /// let min = sketch.fast_query_min_with_key(hash, &query_key, |val, _, _, _| *val);
+    /// # let _ = min;
     /// ```
     #[inline(always)]
     pub fn fast_query_min_with_key<F, Q, R>(&self, hashed_val: u128, query_key: &Q, op: F) -> R
@@ -428,9 +488,15 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// With complex counter type:
-    /// ```ignore
-    /// let max = sketch.fast_query_max_with_key(hash, &query_key,
-    ///     |counter, key, _, _| counter.estimate(key));
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// # let query_key = ();
+    /// let max = sketch.fast_query_max_with_key(hash, &query_key, |val, _, _, _| *val);
+    /// # let _ = max;
     /// ```
     #[inline(always)]
     pub fn fast_query_max_with_key<F, Q, R>(&self, hashed_val: u128, query_key: &Q, op: F) -> R
@@ -465,9 +531,16 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// With complex counter type:
-    /// ```ignore
-    /// let median = sketch.fast_query_median_with_key(hash, &query_key,
-    ///     |counter, key, _, _| counter.estimate(key));
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// # let query_key = ();
+    /// let median =
+    ///     sketch.fast_query_median_with_key(hash, &query_key, |val, _, _, _| *val as f64);
+    /// # let _ = median;
     /// ```
     #[inline(always)]
     pub fn fast_query_median_with_key<F, Q>(&self, hashed_val: u128, query_key: &Q, op: F) -> f64
@@ -499,21 +572,31 @@ impl<T> Vector2D<T> {
     /// # Examples
     ///
     /// Custom sum with row-dependent weights:
-    /// ```ignore
-    /// let sum = sketch.fast_query_aggregate(hash, &(), 0.0,
-    ///     |acc, val, _, row, _| acc + (*val as f64 * weight(row)));
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
+    /// let sum = sketch.fast_query_aggregate(hash, &(), 0.0, |acc, val, _, row, _| {
+    ///     acc + (*val as f64 * (row as f64 + 1.0))
+    /// });
+    /// # let _ = sum;
     /// ```
     ///
     /// Count sketch estimation (sign-based sum then median):
-    /// ```ignore
+    /// ```no_run
+    /// use sketchlib_rust::Vector2D;
+    /// # let rows = 2;
+    /// # let cols = 8;
+    /// # let sketch = Vector2D::from_fn(rows, cols, |_, _| 0i64);
+    /// # let hash: u128 = 0x1234;
     /// let mut estimates = Vec::new();
-    /// sketch.fast_query_aggregate(hash, &(), &mut estimates,
-    ///     |acc, val, _, row, hash| {
-    ///         let sign_bit = (hash >> (127 - row)) & 1;
-    ///         let sign = -(1 - 2 * sign_bit as i64) as f64;
-    ///         acc.push(*val as f64 * sign);
-    ///         acc
-    ///     });
+    /// sketch.fast_query_aggregate(hash, &(), &mut estimates, |acc, val, _, row, hash| {
+    ///     let sign = if ((hash >> row) & 1) == 0 { 1.0 } else { -1.0 };
+    ///     acc.push(*val as f64 * sign);
+    ///     acc
+    /// });
     /// ```
     #[inline(always)]
     pub fn fast_query_aggregate<F, Q, R>(
@@ -539,6 +622,7 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns an immutable slice corresponding to a full row.
+    #[inline(always)]
     pub fn row_slice(&self, row: usize) -> &[T] {
         debug_assert!(row < self.rows, "row index out of bounds");
         let start = row * self.cols;
@@ -547,6 +631,7 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns a mutable slice corresponding to a full row.
+    #[inline(always)]
     pub fn row_slice_mut(&mut self, row: usize) -> &mut [T] {
         debug_assert!(row < self.rows, "row index out of bounds");
         let start = row * self.cols;
@@ -555,13 +640,76 @@ impl<T> Vector2D<T> {
     }
 
     /// Returns the number of rows (legacy helper).
+    #[inline(always)]
     pub fn get_row(&self) -> usize {
         self.rows
     }
 
     /// Returns the number of columns (legacy helper).
+    #[inline(always)]
     pub fn get_col(&self) -> usize {
         self.cols
+    }
+}
+
+impl<T> MatrixStorage<T> for Vector2D<T>
+where
+    T: Copy + std::ops::AddAssign,
+{
+    type HashValue = u128;
+    #[inline(always)]
+    fn rows(&self) -> usize {
+        self.rows()
+    }
+
+    #[inline(always)]
+    fn cols(&self) -> usize {
+        self.cols()
+    }
+
+    #[inline(always)]
+    fn update_one_counter<F, V>(&mut self, row: usize, col: usize, op: F, value: V)
+    where
+        F: Fn(&mut T, V),
+    {
+        self.update_one_counter(row, col, op, value);
+    }
+
+    #[inline(always)]
+    fn increment_by_row(&mut self, row: usize, col: usize, value: T) {
+        let idx = row * self.cols + col;
+        self.data[idx] += value;
+    }
+
+    #[inline(always)]
+    fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: u128)
+    where
+        F: Fn(&mut T, &V, usize),
+        V: Clone,
+    {
+        self.fast_insert(op, value, hashed_val);
+    }
+
+    #[inline(always)]
+    fn fast_query_min<F, R>(&self, hashed_val: u128, op: F) -> R
+    where
+        F: Fn(&T, usize, u128) -> R,
+        R: Ord,
+    {
+        self.fast_query_min(hashed_val, op)
+    }
+
+    #[inline(always)]
+    fn fast_query_median<F>(&self, hashed_val: u128, op: F) -> f64
+    where
+        F: Fn(&T, usize, u128) -> f64,
+    {
+        self.fast_query_median(hashed_val, op)
+    }
+
+    #[inline(always)]
+    fn query_one_counter(&self, row: usize, col: usize) -> T {
+        self.query_one_counter(row, col)
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::SketchInput;
+use crate::{SketchInput, Vector2D};
 use serde::{Deserialize, Serialize};
 
 use super::super::sketches::*;
@@ -6,7 +6,7 @@ use super::super::sketches::*;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub enum Chapter<'a> {
-    CM(CountMin),
+    CM(CountMin<Vector2D<i32>, FastPath>),
     #[serde(borrow)]
     COCO(Coco<'a>),
     CU(CountL2HH),
@@ -94,7 +94,7 @@ impl<'a> Chapter<'a> {
     /// Insert a value into the sketch
     pub fn insert(&mut self, val: &SketchInput<'a>) {
         match self {
-            Chapter::CM(sketch) => sketch.insert_cm(val),
+            Chapter::CM(sketch) => sketch.insert(val),
             Chapter::COCO(sketch) => sketch.insert(val, 1),
             Chapter::CU(sketch) => sketch.fast_insert_with_count(val, 1),
             Chapter::ELASTIC(sketch) => match val {
@@ -185,7 +185,7 @@ impl<'a> Chapter<'a> {
 
     pub fn query(&self, key: &SketchInput<'a>) -> Result<f64, &'static str> {
         match (self, key) {
-            (Chapter::CM(count_min), _) => Ok(count_min.get_est(key) as f64),
+            (Chapter::CM(count_min), _) => Ok(count_min.estimate(key) as f64),
             (Chapter::COCO(coco), _) => Ok(coco.clone().estimate(key.clone()) as f64),
             (Chapter::CU(count_univ), _) => Ok(count_univ.fast_get_est(key)),
             (Chapter::ELASTIC(elastic), SketchInput::String(s)) => {

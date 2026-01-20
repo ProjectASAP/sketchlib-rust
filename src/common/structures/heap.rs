@@ -5,20 +5,18 @@ use std::ops::{Index, IndexMut};
 /// Implement this trait to define custom heap orderings.
 pub trait CommonHeapOrder<T> {
     /// Returns true if parent and child should be swapped.
-    /// This determines whether the heap is min or max, and what property to compare.
+    /// This determines which value sits at the root.
     fn should_swap(&self, parent: &T, child: &T) -> bool;
 
     /// Returns true if the new value should replace the root when heap is at capacity.
-    /// For min-heap: new value should be larger than root
-    /// For max-heap: new value should be smaller than root
     fn should_replace_root(&self, root: &T, new_value: &T) -> bool;
 }
 
-/// Min-heap ordering: smaller values have higher priority (bubble up).
+/// Root is the smallest value; bounded heap retains the largest values.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommonMinHeap;
+pub struct KeepSmallest;
 
-impl<T: Ord> CommonHeapOrder<T> for CommonMinHeap {
+impl<T: Ord> CommonHeapOrder<T> for KeepSmallest {
     #[inline(always)]
     fn should_swap(&self, parent: &T, child: &T) -> bool {
         child < parent
@@ -26,16 +24,16 @@ impl<T: Ord> CommonHeapOrder<T> for CommonMinHeap {
 
     #[inline(always)]
     fn should_replace_root(&self, root: &T, new_value: &T) -> bool {
-        // For min-heap: replace root (minimum) if new value is larger
+        // Replace root (smallest) if new value is larger.
         new_value > root
     }
 }
 
-/// Max-heap ordering: larger values have higher priority (bubble up).
+/// Root is the largest value; bounded heap retains the smallest values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommonMaxHeap;
+pub struct KeepLargest;
 
-impl<T: Ord> CommonHeapOrder<T> for CommonMaxHeap {
+impl<T: Ord> CommonHeapOrder<T> for KeepLargest {
     #[inline(always)]
     fn should_swap(&self, parent: &T, child: &T) -> bool {
         child > parent
@@ -43,7 +41,7 @@ impl<T: Ord> CommonHeapOrder<T> for CommonMaxHeap {
 
     #[inline(always)]
     fn should_replace_root(&self, root: &T, new_value: &T) -> bool {
-        // For max-heap: replace root (maximum) if new value is smaller
+        // Replace root (largest) if new value is smaller.
         new_value < root
     }
 }
@@ -95,7 +93,7 @@ impl<T, O: CommonHeapOrder<T>> CommonHeap<T, O> {
         self.data.clear();
     }
 
-    /// Returns a reference to the root element (min or max depending on order) without removing it.
+    /// Returns a reference to the root element without removing it.
     #[inline]
     pub fn peek(&self) -> Option<&T> {
         self.data.first()
@@ -237,19 +235,19 @@ impl<T, O: CommonHeapOrder<T>> CommonHeap<T, O> {
 }
 
 // Convenience constructors for common heap types
-impl<T: Ord> CommonHeap<T, CommonMinHeap> {
+impl<T: Ord> CommonHeap<T, KeepSmallest> {
     /// Creates a new min-heap with the specified capacity.
     #[inline]
     pub fn new_min(capacity: usize) -> Self {
-        Self::with_capacity(capacity, CommonMinHeap)
+        Self::with_capacity(capacity, KeepSmallest)
     }
 }
 
-impl<T: Ord> CommonHeap<T, CommonMaxHeap> {
+impl<T: Ord> CommonHeap<T, KeepLargest> {
     /// Creates a new max-heap with the specified capacity.
     #[inline]
     pub fn new_max(capacity: usize) -> Self {
-        Self::with_capacity(capacity, CommonMaxHeap)
+        Self::with_capacity(capacity, KeepLargest)
     }
 }
 

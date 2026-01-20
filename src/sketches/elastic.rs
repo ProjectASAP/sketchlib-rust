@@ -1,6 +1,7 @@
 use crate::{LASTSTATE, SketchInput, hash_it};
 
-use super::CountMin;
+use super::{CountMin, RegularPath};
+use crate::Vector2D;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -22,7 +23,7 @@ pub struct HeavyBucket {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Elastic {
     pub heavy: Vec<HeavyBucket>,
-    pub light: CountMin,
+    pub light: CountMin<Vector2D<i32>, RegularPath>,
     pub bktlen: i32,
 }
 
@@ -66,7 +67,7 @@ impl Elastic {
         for _ in 0..l {
             heavy.push(HeavyBucket::new());
         }
-        let light = CountMin::default();
+        let light = CountMin::<Vector2D<i32>, RegularPath>::default();
         Elastic {
             heavy,
             light,
@@ -90,14 +91,14 @@ impl Elastic {
             heavy_bkt.vote_neg += 1;
             if heavy_bkt.vote_neg / heavy_bkt.vote_pos < 8 {
                 // self.light.insert_cm(&id);
-                self.light.insert_cm(&SketchInput::String(id));
+                self.light.insert(&SketchInput::String(id));
             } else {
                 let vote = heavy_bkt.vote_pos;
                 heavy_bkt.evict(id);
                 for _ in 0..vote {
                     // self.light. insert_cm(&to_evict);
                     self.light
-                        .insert_cm(&SketchInput::String(heavy_bkt.flow_id.clone()));
+                        .insert(&SketchInput::String(heavy_bkt.flow_id.clone()));
                 }
             }
         }
@@ -111,7 +112,7 @@ impl Elastic {
         if id == heavy_bkt.flow_id {
             if heavy_bkt.eviction {
                 // let light_result = self.light.get_est(&id) as i32;
-                let light_result = self.light.get_est(&SketchInput::String(id)) as i32;
+                let light_result = self.light.estimate(&SketchInput::String(id)) as i32;
                 let heavy_result = heavy_bkt.vote_pos;
                 light_result + heavy_result
             } else {
@@ -119,7 +120,7 @@ impl Elastic {
             }
         } else {
             // return self.light.get_est(&id) as i32;
-            self.light.get_est(&SketchInput::String(id)) as i32
+            self.light.estimate(&SketchInput::String(id)) as i32
         }
     }
 }

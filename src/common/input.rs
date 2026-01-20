@@ -4,14 +4,14 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::{Count, CountL2HH, CountMin, HllDf, KLL, UnivMon};
+use crate::{Count, CountL2HH, CountMin, FastPath, HllDf, KLL, UnivMon, Vector2D};
 
 /// enum that can be any sketch type
 /// Provides a unified interface for different sketch implementations
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AnySketch {
-    CountMin(CountMin),
-    Count(Count),
+    CountMin(CountMin<Vector2D<i32>, FastPath>),
+    Count(Count<Vector2D<i32>, FastPath>),
     HllDf(HllDf),
 }
 
@@ -19,8 +19,8 @@ impl AnySketch {
     /// Insert a value into the sketch
     pub fn insert(&mut self, val: &SketchInput) {
         match self {
-            AnySketch::CountMin(sketch) => sketch.insert_cm(val),
-            AnySketch::Count(sketch) => sketch.fast_insert(val),
+            AnySketch::CountMin(sketch) => sketch.insert(val),
+            AnySketch::Count(sketch) => sketch.insert(val),
             AnySketch::HllDf(sketch) => sketch.insert(val),
         }
     }
@@ -56,8 +56,8 @@ impl AnySketch {
     /// Query the sketch for an estimate
     pub fn query(&self, key: &SketchInput) -> Result<f64, &'static str> {
         match self {
-            AnySketch::CountMin(cm) => Ok(cm.get_est(key) as f64),
-            AnySketch::Count(cs) => Ok(cs.fast_estimate(key)),
+            AnySketch::CountMin(cm) => Ok(cm.estimate(key) as f64),
+            AnySketch::Count(cs) => Ok(cs.estimate(key)),
             AnySketch::HllDf(hll_df) => Ok(hll_df.get_est() as f64),
         }
     }
@@ -354,9 +354,9 @@ impl<'a> fmt::Display for HydraQuery<'a> {
 /// enum that can be used as counter in Hydra
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum HydraCounter {
-    CM(CountMin),
+    CM(CountMin<Vector2D<i32>, FastPath>),
     HLL(HllDf),
-    CS(Count),
+    CS(Count<Vector2D<i32>, FastPath>),
     KLL(KLL),
     UNIVERSAL(UnivMon),
 }
@@ -376,13 +376,43 @@ impl fmt::Display for HydraCounter {
 impl HydraCounter {
     /// Insert a value into the counter sketch
     /// This updates the underlying sketch with the given value
-    pub fn insert(&mut self, value: &SketchInput) {
-        match self {
-            HydraCounter::CM(cm) => cm.fast_insert(value),
-            HydraCounter::HLL(hll) => hll.insert(value),
-            HydraCounter::CS(count) => count.fast_insert(value),
-            HydraCounter::KLL(kll) => kll.update(value).unwrap(),
-            HydraCounter::UNIVERSAL(u) => u.insert(value, 1),
+    pub fn insert(&mut self, value: &SketchInput, count: Option<i32>) {
+        match (self, count) {
+            (HydraCounter::CM(cm), None) => cm.insert(value),
+            (HydraCounter::CM(cm), Some(i)) => cm.insert_many(value, i),
+            (HydraCounter::HLL(hll), _) => hll.insert(value), // for cardinality, insert once or many times make no difference
+            (HydraCounter::CS(count), None) => count.insert(value),
+            (HydraCounter::CS(count), Some(i)) => count.insert_many(value, i),
+            (HydraCounter::KLL(kll), None) => kll.update(value).unwrap(),
+            (HydraCounter::KLL(kll), Some(i)) => {
+                for _ in 0..i as usize {
+                    kll.update(value).unwrap()
+                }
+            }
+            (HydraCounter::UNIVERSAL(u), None) => u.insert(value, 1),
+            (HydraCounter::UNIVERSAL(u), Some(i)) => u.insert(value, i as i64),
+        }
+    }
+
+    /// Insert a value using a pre-computed hash when supported.
+    /// For sketches that require full values (e.g., KLL, UnivMon), this falls back to `insert`.
+    pub fn insert_with_hash(&mut self, value: &SketchInput, hashed_val: u128, count: Option<i32>) {
+        match (self, count) {
+            (HydraCounter::CM(cm), None) => cm.fast_insert_with_hash_value(hashed_val),
+            (HydraCounter::CM(cm), Some(i)) => cm.fast_insert_many_with_hash_value(hashed_val, i),
+            (HydraCounter::HLL(hll), _) => hll.insert(value),
+            (HydraCounter::CS(count), None) => count.fast_insert_with_hash_value(hashed_val),
+            (HydraCounter::CS(count), Some(i)) => {
+                count.fast_insert_many_with_hash_value(hashed_val, i)
+            }
+            (HydraCounter::KLL(kll), None) => kll.update(value).unwrap(),
+            (HydraCounter::KLL(kll), Some(i)) => {
+                for _ in 0..i as usize {
+                    kll.update(value).unwrap()
+                }
+            }
+            (HydraCounter::UNIVERSAL(u), None) => u.insert(value, 1),
+            (HydraCounter::UNIVERSAL(u), Some(i)) => u.insert(value, i as i64),
         }
     }
 
@@ -401,9 +431,9 @@ impl HydraCounter {
     /// // For CountMin, only Frequency queries are valid
     /// use sketchlib_rust::input::HydraCounter;
     /// use sketchlib_rust::input::HydraQuery;
-    /// use sketchlib_rust::CountMin;
+    /// use sketchlib_rust::{CountMin, FastPath, Vector2D};
     /// use sketchlib_rust::SketchInput;
-    /// let counter = HydraCounter::CM(CountMin::default());
+    /// let counter = HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
     /// let result = counter.query(&HydraQuery::Frequency(SketchInput::I64(42)));
     ///
     /// // For KLL, only Quantile queries would be valid
@@ -411,12 +441,10 @@ impl HydraCounter {
     /// ```
     pub fn query(&self, query: &HydraQuery) -> Result<f64, String> {
         match (self, query) {
-            (HydraCounter::CM(cm), HydraQuery::Frequency(value)) => {
-                Ok(cm.fast_estimate(value) as f64)
-            }
+            (HydraCounter::CM(cm), HydraQuery::Frequency(value)) => Ok(cm.estimate(value) as f64),
             (HydraCounter::HLL(hll_df), HydraQuery::Cardinality) => Ok(hll_df.get_est() as f64),
             (HydraCounter::CS(count), HydraQuery::Frequency(value)) => {
-                Ok(count.fast_estimate(value) as f64)
+                Ok(count.estimate(value) as f64)
             }
             (HydraCounter::KLL(kll), HydraQuery::Quantile(q)) => Ok(kll.quantile(*q)),
             (HydraCounter::KLL(kll), HydraQuery::Cdf(value)) => Ok(kll.cdf().quantile(*value)),
@@ -442,6 +470,18 @@ impl HydraCounter {
             }
             (HydraCounter::HLL(h1), HydraCounter::HLL(h2)) => {
                 h1.merge(h2);
+                Ok(())
+            }
+            (HydraCounter::CS(self_count), HydraCounter::CS(other_count)) => {
+                self_count.merge(other_count);
+                Ok(())
+            }
+            (HydraCounter::KLL(self_kll), HydraCounter::KLL(other_kll)) => {
+                self_kll.merge(other_kll);
+                Ok(())
+            }
+            (HydraCounter::UNIVERSAL(self_um), HydraCounter::UNIVERSAL(other_um)) => {
+                self_um.merge(other_um);
                 Ok(())
             }
             (_, _) => Err("Sketch Type in Hydra Counter different, cannot merge".to_string()),

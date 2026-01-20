@@ -2,10 +2,11 @@ use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::input::{HydraCounter, HydraQuery};
-use crate::sketches::countmin::CountMin;
-use crate::{HYDRA_SEED, SketchInput, Vector2D, hash_it_to_128};
+use crate::{CountMin, FastPath, Vector2D};
+use crate::{HYDRA_SEED, SketchInput, hash_it_to_128};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hydra {
@@ -17,7 +18,11 @@ pub struct Hydra {
 
 impl Default for Hydra {
     fn default() -> Self {
-        Hydra::with_dimensions(3, 32, HydraCounter::CM(CountMin::default()))
+        Hydra::with_dimensions(
+            3,
+            32,
+            HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+        )
     }
 }
 
@@ -35,26 +40,72 @@ impl Hydra {
 
     /// Assume key is a string that aggregate different keys
     /// with ";" for now
-    pub fn update(&mut self, key: &str, value: &SketchInput) {
+    pub fn update(&mut self, key: &str, value: &SketchInput, count: Option<i32>) {
         let parts: Vec<&str> = key.split(';').filter(|s| !s.is_empty()).collect();
         let n = parts.len();
-        let mut result = Vec::new();
+
+        // Reuse a single buffer to minimize allocations
+        let mut buffer = String::with_capacity(key.len());
+
         for i in 1..(1 << n) {
-            let mut current_combination: Vec<&str> = Vec::new();
-            // for j in 0..n {
-            for (j, &part_item) in parts.iter().enumerate().take(n) {
+            buffer.clear();
+            let mut first = true;
+            for (j, &part_item) in parts.iter().enumerate() {
                 if (i >> j) & 1 == 1 {
-                    current_combination.push(part_item);
+                    if !first {
+                        buffer.push(';');
+                    }
+                    buffer.push_str(part_item);
+                    first = false;
                 }
             }
-            result.push(current_combination.join(";"));
+
+            // Insert immediately instead of collecting all combinations first
+            // Use Str(&str) variant to avoid cloning the buffer
+            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::Str(&buffer));
+            self.sketches
+                .fast_insert(|a, b, _| a.insert(b, count), value, hash);
         }
 
-        for subkey in &result {
-            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
-            self.sketches
-                .fast_insert(|a, b, _| a.insert(b), value, hash);
+        // Original implementation (kept for reference):
+        // let mut result = Vec::new();
+        // for i in 1..(1 << n) {
+        //     let mut current_combination: Vec<&str> = Vec::new();
+        //     // for j in 0..n {
+        //     for (j, &part_item) in parts.iter().enumerate().take(n) {
+        //         if (i >> j) & 1 == 1 {
+        //             current_combination.push(part_item);
+        //         }
+        //     }
+        //     result.push(current_combination.join(";"));
+        // }
+        //
+        // for subkey in &result {
+        //     let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
+        //     self.sketches
+        //         .fast_insert(|a, b, _| a.insert(b, count), value, hash);
+        // }
+    }
+
+    /// Merge another Hydra sketch into this one.
+    pub fn merge(&mut self, other: &Hydra) -> Result<(), String> {
+        if self.row_num != other.row_num || self.col_num != other.col_num {
+            return Err("Hydra dimension mismatch while merging".to_string());
         }
+        if std::mem::discriminant(&self.type_to_clone)
+            != std::mem::discriminant(&other.type_to_clone)
+        {
+            return Err("Hydra counter type mismatch while merging".to_string());
+        }
+        let self_cells = self.sketches.as_mut_slice();
+        let other_cells = other.sketches.as_slice();
+        if self_cells.len() != other_cells.len() {
+            return Err("Hydra storage length mismatch while merging".to_string());
+        }
+        for (self_counter, other_counter) in self_cells.iter_mut().zip(other_cells.iter()) {
+            self_counter.merge(other_counter)?;
+        }
+        Ok(())
     }
 
     /// Query the Hydra sketch for a specific subpopulation
@@ -92,26 +143,151 @@ impl Hydra {
         to_vec_named(self)
     }
 
-    /// Convenience alias matching other sketches.
-    pub fn serialize(&self) -> Result<Vec<u8>, RmpEncodeError> {
-        self.serialize_to_bytes()
-    }
-
     /// Deserializes a Hydra sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
     }
+}
 
-    /// Convenience alias matching other sketches.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
-        Self::deserialize_from_bytes(bytes)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultiHeadHydra {
+    pub row_num: usize,
+    pub col_num: usize,
+    pub sketches: Vector2D<HashMap<String, HydraCounter>>,
+    pub dimensions: Vec<(String, HydraCounter)>,
+}
+
+impl MultiHeadHydra {
+    pub fn with_dimensions(r: usize, c: usize, dimensions: Vec<(String, HydraCounter)>) -> Self {
+        let template = &dimensions;
+        let sketches = Vector2D::from_fn(r, c, |_, _| {
+            let mut cell_map = HashMap::with_capacity(template.len());
+            for (name, counter) in template.iter() {
+                cell_map.insert(name.clone(), counter.clone());
+            }
+            cell_map
+        });
+        MultiHeadHydra {
+            row_num: r,
+            col_num: c,
+            sketches,
+            dimensions,
+        }
+    }
+
+    /// Single fan-out, insert multiple values to different dimensions
+    pub fn update(&mut self, key: &str, values: &[(&str, &SketchInput)], count: Option<i32>) {
+        let parts: Vec<&str> = key.split(';').filter(|s| !s.is_empty()).collect();
+        let n = parts.len();
+
+        // Reuse a single buffer to minimize allocations
+        let mut buffer = String::with_capacity(key.len());
+        for i in 1..(1 << n) {
+            buffer.clear();
+            let mut first = true;
+            for (j, &part_item) in parts.iter().enumerate() {
+                if (i >> j) & 1 == 1 {
+                    if !first {
+                        buffer.push(';');
+                    }
+                    buffer.push_str(part_item);
+                    first = false;
+                }
+            }
+
+            // Insert immediately instead of collecting all combinations first
+            // Use Str(&str) variant to avoid cloning the buffer
+            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::Str(&buffer));
+            self.sketches.fast_insert(
+                |cell_map, dim_values, _| {
+                    for &(dim_name, value) in (*dim_values).iter() {
+                        if let Some(counter) = cell_map.get_mut(dim_name) {
+                            let value_hash = hash_it_to_128(0, value);
+                            counter.insert_with_hash(value, value_hash, count);
+                        }
+                    }
+                },
+                values,
+                hash,
+            );
+        }
+    }
+
+    /// Merge another MultiHeadHydra into this one.
+    pub fn merge(&mut self, other: &MultiHeadHydra) -> Result<(), String> {
+        if self.row_num != other.row_num || self.col_num != other.col_num {
+            return Err("MultiHeadHydra dimension mismatch while merging".to_string());
+        }
+        if self.dimensions.len() != other.dimensions.len() {
+            return Err("MultiHeadHydra dimension list mismatch while merging".to_string());
+        }
+        for (name, counter) in self.dimensions.iter() {
+            let other_counter = other
+                .dimensions
+                .iter()
+                .find(|(other_name, _)| other_name == name)
+                .map(|(_, counter)| counter)
+                .ok_or_else(|| {
+                    format!("MultiHeadHydra missing dimension '{}' while merging", name)
+                })?;
+            if std::mem::discriminant(counter) != std::mem::discriminant(other_counter) {
+                return Err(format!(
+                    "MultiHeadHydra counter type mismatch for dimension '{}'",
+                    name
+                ));
+            }
+        }
+
+        let dim_names: Vec<&str> = self
+            .dimensions
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let self_cells = self.sketches.as_mut_slice();
+        let other_cells = other.sketches.as_slice();
+        if self_cells.len() != other_cells.len() {
+            return Err("MultiHeadHydra storage length mismatch while merging".to_string());
+        }
+        for (self_cell, other_cell) in self_cells.iter_mut().zip(other_cells.iter()) {
+            for dim_name in dim_names.iter() {
+                let self_counter = self_cell.get_mut(*dim_name).ok_or_else(|| {
+                    format!(
+                        "MultiHeadHydra missing dimension '{}' in target cell",
+                        dim_name
+                    )
+                })?;
+                let other_counter = other_cell.get(*dim_name).ok_or_else(|| {
+                    format!(
+                        "MultiHeadHydra missing dimension '{}' in source cell",
+                        dim_name
+                    )
+                })?;
+                self_counter.merge(other_counter)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Query a specific dimension
+    pub fn query_key(&self, key: Vec<&str>, dimension: &str, query: &HydraQuery) -> f64 {
+        let key_string = key.join(";");
+        let hashed_val = hash_it_to_128(HYDRA_SEED, &SketchInput::String(key_string));
+
+        self.sketches
+            .fast_query_median_with_key(hashed_val, query, |cell_map, q, _, _| {
+                cell_map
+                    .get(dimension)
+                    .map(|counter| counter.query(q).unwrap())
+                    .unwrap_or(0.0)
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Count, CountMin, HllDf, KLL, UnivMon};
+    use crate::{Count, CountMin, FastPath, HllDf, KLL, UnivMon, Vector2D};
 
     const EPSILON: f64 = 1e-6;
 
@@ -137,7 +313,7 @@ mod tests {
 
         for (key, value) in dataset {
             let input = SketchInput::F64(value);
-            hydra.update(key, &input);
+            hydra.update(key, &input, None);
         }
 
         hydra
@@ -145,11 +321,15 @@ mod tests {
 
     #[test]
     fn hydra_updates_countmin_frequency() {
-        let mut hydra = Hydra::with_dimensions(3, 32, HydraCounter::CM(CountMin::default()));
+        let mut hydra = Hydra::with_dimensions(
+            3,
+            32,
+            HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+        );
         let value = SketchInput::String("event".to_string());
 
         for _ in 0..5 {
-            hydra.update("user;session", &value);
+            hydra.update("user;session", &value, None);
         }
 
         let combined = hydra.query_frequency(vec!["user", "session"], &value);
@@ -164,12 +344,16 @@ mod tests {
 
     #[test]
     fn hydra_updates_countmin_frequency_multiple_values() {
-        let mut hydra = Hydra::with_dimensions(3, 32, HydraCounter::CM(CountMin::default()));
+        let mut hydra = Hydra::with_dimensions(
+            3,
+            32,
+            HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+        );
 
         for i in 0..5 {
             for _ in 0..i {
                 let value = SketchInput::I64(i as i64);
-                hydra.update("key1;key2;key3", &value);
+                hydra.update("key1;key2;key3", &value, None);
             }
         }
 
@@ -189,7 +373,8 @@ mod tests {
 
     #[test]
     fn hydra_round_trip_serialization() {
-        let template = HydraCounter::CM(CountMin::with_dimensions(3, 64));
+        let template =
+            HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::with_dimensions(3, 64));
         let mut hydra = Hydra::with_dimensions(3, 64, template);
 
         let dataset = [
@@ -201,7 +386,7 @@ mod tests {
         ];
 
         for (key, value) in dataset {
-            hydra.update(key, &SketchInput::String(value.to_string()));
+            hydra.update(key, &SketchInput::String(value.to_string()), None);
         }
 
         let hot_value = SketchInput::String("event_a".to_string());
@@ -239,9 +424,69 @@ mod tests {
     }
 
     #[test]
+    fn multihead_hydra_updates_multiple_dimensions() {
+        let dimensions = vec![
+            (
+                "events".to_string(),
+                HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+            ),
+            (
+                "latency".to_string(),
+                HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+            ),
+        ];
+        let mut hydra = MultiHeadHydra::with_dimensions(3, 32, dimensions);
+
+        let event_value = SketchInput::String("event_a".to_string());
+        let latency_value = SketchInput::I64(120);
+
+        for _ in 0..3 {
+            hydra.update(
+                "user;session",
+                &[("events", &event_value), ("latency", &latency_value)],
+                None,
+            );
+        }
+
+        let events_full = hydra.query_key(
+            vec!["user", "session"],
+            "events",
+            &HydraQuery::Frequency(event_value.clone()),
+        );
+        assert!(
+            events_full >= 3.0,
+            "expected events count at least 3, got {events_full}"
+        );
+
+        let events_fanout = hydra.query_key(
+            vec!["user"],
+            "events",
+            &HydraQuery::Frequency(event_value.clone()),
+        );
+        assert!(
+            events_fanout >= 3.0,
+            "expected fan-out events count at least 3, got {events_fanout}"
+        );
+
+        let latency_full = hydra.query_key(
+            vec!["user", "session"],
+            "latency",
+            &HydraQuery::Frequency(latency_value.clone()),
+        );
+        assert!(
+            latency_full >= 3.0,
+            "expected latency count at least 3, got {latency_full}"
+        );
+    }
+
+    #[test]
     fn hydra_subpopulation_frequency_test() {
         // Build test dataset using CountMin for frequency queries
-        let mut hydra = Hydra::with_dimensions(3, 64, HydraCounter::CM(CountMin::default()));
+        let mut hydra = Hydra::with_dimensions(
+            3,
+            64,
+            HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default()),
+        );
 
         let dataset = [
             ("key1;key2;key3", 10.0),
@@ -259,7 +504,7 @@ mod tests {
         // Insert all data points
         for (key, value) in dataset {
             let input = SketchInput::F64(value);
-            hydra.update(key, &input);
+            hydra.update(key, &input, None);
         }
 
         // Test single label subpopulation queries
@@ -334,7 +579,7 @@ mod tests {
         // Insert all data points (HLL tracks distinct values)
         for (key, value) in dataset {
             let input = SketchInput::F64(value);
-            hydra.update(key, &input);
+            hydra.update(key, &input, None);
         }
 
         // Test single label cardinality
@@ -401,7 +646,7 @@ mod tests {
         ];
 
         for sample in &samples {
-            hydra.update("metrics;latency", sample);
+            hydra.update("metrics;latency", sample, None);
         }
 
         // let query_value = SketchInput::F64(35.0);
@@ -460,12 +705,12 @@ mod tests {
 
     // Helper to generate a default CountMin counter
     fn cm_counter() -> HydraCounter {
-        HydraCounter::CM(CountMin::default())
+        HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default())
     }
 
     // Helper to generate a default Count Sketch counter
     fn count_counter() -> HydraCounter {
-        HydraCounter::CS(Count::default())
+        HydraCounter::CS(Count::<Vector2D<i32>, FastPath>::default())
     }
 
     // Helper to generate a default UnivMon counter
@@ -479,9 +724,9 @@ mod tests {
         let key = SketchInput::I64(42);
 
         // 1. Insert data
-        counter.insert(&key);
-        counter.insert(&key);
-        counter.insert(&key);
+        counter.insert(&key, None);
+        counter.insert(&key, None);
+        counter.insert(&key, None);
 
         // 2. Query Frequency (Valid)
         let query = HydraQuery::Frequency(key);
@@ -515,10 +760,10 @@ mod tests {
 
         // 1. Insert unique items
         for i in 0..100 {
-            counter.insert(&SketchInput::I64(i));
+            counter.insert(&SketchInput::I64(i), None);
         }
         // Duplicate insertions shouldn't affect cardinality
-        counter.insert(&SketchInput::I64(0));
+        counter.insert(&SketchInput::I64(0), None);
 
         // 2. Query Cardinality (Valid)
         let result = counter.query(&HydraQuery::Cardinality);
@@ -540,7 +785,7 @@ mod tests {
 
         // Insert numbers 1 to 100
         for i in 1..=100 {
-            counter.insert(&SketchInput::F64(i as f64));
+            counter.insert(&SketchInput::F64(i as f64), None);
         }
 
         // Query Median (0.5)
@@ -567,10 +812,10 @@ mod tests {
         let key_b = SketchInput::Str("B");
 
         for _ in 0..10 {
-            counter.insert(&key_a);
+            counter.insert(&key_a, None);
         }
         for _ in 0..20 {
-            counter.insert(&key_b);
+            counter.insert(&key_b, None);
         }
 
         // 1. Test L1 Norm (Total Sum of Weights)
@@ -595,8 +840,8 @@ mod tests {
         let mut c1 = cm_counter();
         let mut c2 = cm_counter();
 
-        c1.insert(&SketchInput::I64(1));
-        c2.insert(&SketchInput::I64(1));
+        c1.insert(&SketchInput::I64(1), None);
+        c2.insert(&SketchInput::I64(1), None);
 
         // Valid merge
         assert!(c1.merge(&c2).is_ok());
@@ -617,7 +862,7 @@ mod tests {
         let key = SketchInput::I64(7);
 
         for _ in 0..4 {
-            counter.insert(&key);
+            counter.insert(&key, None);
         }
 
         let query = HydraQuery::Frequency(key);
