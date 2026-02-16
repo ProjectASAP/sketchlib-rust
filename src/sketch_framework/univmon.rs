@@ -1,5 +1,29 @@
+//! UnivMon (Universal Monitoring) Implementation
+//!
+//! This module provides an implementation of the UnivMon algorithm as described in:
+//! "Universal Sketches for the Next Generation of Real-time Network Data Analytics"
+//! by Liu et al. (ACM SIGCOMM 2016).
+//!
+//! UnivMon is a universal sketch framework that enables the estimation of multiple
+//! network flow metrics—such as L1/L2 norms, Shannon entropy, and cardinality—using
+//! a single, hierarchical sampling structure.
+//!
+//! # Architecture
+//! The implementation consists of a "Sketch Pyramid" where:
+//! * Each layer $i$ samples a subset of the stream from layer $i-1$ with probability 1/2.
+//! * Each layer maintains a functional sketch (e.g., Count-Min Sketch) for frequency estimation.
+//! * Each layer maintains a Heavy Hitter heap to track the most frequent elements at that sampling level.
+//!
+//! # Capabilities
+//! * **L1/L2 Norm**: Estimation of total flow volume and second moments.
+//! * **Entropy**: Calculation of flow distribution complexity.
+//! * **Cardinality**: Estimation of the number of distinct elements.
+//! * **Heavy Hitters**: Tracking top flows across different sampling granularities.
+//!
+//! This implementation is part of the `sketchlib-rust` library.
+
 use crate::common::heap::HHHeap;
-use crate::common::{BOTTOM_LAYER_FINDER, SketchInput, hash_it_to_64, hash_item_to_64};
+use crate::common::{BOTTOM_LAYER_FINDER, SketchInput, hash_item64_seeded, hash64_seeded};
 use crate::common::{L2HH, Vector1D};
 use crate::sketches::count::CountL2HH;
 use rmp_serde::{
@@ -91,14 +115,14 @@ impl UnivMon {
     }
 
     pub fn insert(&mut self, key: &SketchInput, value: i64) {
-        let h = hash_it_to_64(BOTTOM_LAYER_FINDER, key);
+        let h = hash64_seeded(BOTTOM_LAYER_FINDER, key);
         let bottom_layer_num = self.find_bottom_layer_num(h, self.layer_size);
         self.process_univmon(key, value, bottom_layer_num)
     }
 
     pub fn fast_insert(&mut self, key: &SketchInput, value: i64) {
         self.bucket_size += value as usize;
-        let h = hash_it_to_64(BOTTOM_LAYER_FINDER, key);
+        let h = hash64_seeded(BOTTOM_LAYER_FINDER, key);
         let bottom_layer_num = self.find_bottom_layer_num(h, self.layer_size);
         let count = self.l2_sketch_layers[bottom_layer_num].update_and_est(key, value);
         for i in 0..=bottom_layer_num {
@@ -145,9 +169,9 @@ impl UnivMon {
 
             for item in self.hh_layers[i].heap() {
                 if item.count > threshold {
-                    // let hash = (hash_it(LASTSTATE, &item.key) >> (i+1)) & 1;
-                    // let hash = (hash_it(LASTSTATE, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
-                    let hash = (hash_item_to_64(BOTTOM_LAYER_FINDER, &item.key) >> (i + 1)) & 1;
+                    // let hash = (hash64_seeded(CANONICAL_HASH_SEED, &item.key) >> (i+1)) & 1;
+                    // let hash = (hash64_seeded(CANONICAL_HASH_SEED, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
+                    let hash = (hash_item64_seeded(BOTTOM_LAYER_FINDER, &item.key) >> (i + 1)) & 1;
                     let coe = 1.0 - 2.0 * (hash as f64);
                     tmp += coe * g(item.count as f64);
                 }
@@ -283,7 +307,7 @@ mod tests {
     }
 
     // fn bottom_layer_for(um: &UnivMon, key: &str) -> usize {
-    //     let hash = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
+    //     let hash = hash64_seeded(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
     //     um.find_bottom_layer_num(hash, um.layer)
     // }
 
@@ -379,7 +403,7 @@ mod tests {
     fn univmon_layers_use_different_seeds() {
         // Verify that different layers in UnivMon use different seeds
         // by checking they produce different hash values
-        use crate::common::hash_it_to_128;
+        use crate::common::hash128_seeded;
 
         let _um = UnivMon::init_univmon(20, 3, 1024, 4);
 
@@ -387,10 +411,10 @@ mod tests {
         let test_key = SketchInput::Str("test_flow");
 
         // Hash the same key with different seed indices (as used by different layers)
-        let hash_0 = hash_it_to_128(0, &test_key);
-        let hash_1 = hash_it_to_128(1, &test_key);
-        let hash_2 = hash_it_to_128(2, &test_key);
-        let hash_3 = hash_it_to_128(3, &test_key);
+        let hash_0 = hash128_seeded(0, &test_key);
+        let hash_1 = hash128_seeded(1, &test_key);
+        let hash_2 = hash128_seeded(2, &test_key);
+        let hash_3 = hash128_seeded(3, &test_key);
 
         // All should be different
         assert_ne!(hash_0, hash_1, "Layers 0 and 1 should use different seeds");
@@ -466,7 +490,7 @@ mod tests {
 
         let mut um = UnivMon::init_univmon(100, 3, 2048, 16);
         for case in cases {
-            // let h = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(&case.0));
+            // let h = hash64_seeded(BOTTOM_LAYER_FINDER, &SketchInput::Str(&case.0));
             // let bln = um.find_bottom_layer_num(h, 16);
             // um.univmon_processing(&case.0, case.1, bln);
             um.insert(&SketchInput::String(case.0), case.1);
@@ -535,7 +559,7 @@ mod tests {
 
     //     // 2. Pre-calculate the expected bottom layer for this key
     //     // We use the same hasher the struct uses internally
-    //     let hash = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
+    //     let hash = hash64_seeded(BOTTOM_LAYER_FINDER, &SketchInput::Str(key));
     //     let expected_bottom = um.find_bottom_layer_num(hash, layers);
 
     //     // 3. Perform Update
@@ -590,7 +614,7 @@ mod tests {
                 total_count += val_f;
 
                 // Update Sketch
-                // let hash = hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(&key));
+                // let hash = hash64_seeded(BOTTOM_LAYER_FINDER, &SketchInput::Str(&key));
                 // let bln = um.find_bottom_layer_num(hash, 10);
                 // um.univmon_processing(&key, val, bln);
                 um.insert(&SketchInput::String(key), val);
@@ -922,10 +946,10 @@ mod tests {
 //
 //             for item in self.hh_layers[i].heap() {
 //                 if item.count > threshold {
-//                     // let hash = (hash_it(LASTSTATE, &item.key) >> (i+1)) & 1;
-//                     // let hash = (hash_it(LASTSTATE, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
+//                     // let hash = (hash64_seeded(CANONICAL_HASH_SEED, &item.key) >> (i+1)) & 1;
+//                     // let hash = (hash64_seeded(CANONICAL_HASH_SEED, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
 //                     let hash =
-//                         (hash_it(BOTTOM_LAYER_FINDER, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
+//                         (hash64_seeded(BOTTOM_LAYER_FINDER, &SketchInput::Str(&item.key)) >> (i + 1)) & 1;
 //                     let coe = 1.0 - 2.0 * (hash as f64);
 //                     tmp += coe * g(item.count as f64);
 //                 }

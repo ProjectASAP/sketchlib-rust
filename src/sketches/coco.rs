@@ -1,94 +1,76 @@
-use crate::{SketchInput, hash_it};
+//! # CocoSketch (SIGCOMM '21)
+//!
+//! A Rust implementation of the CocoSketch algorithm for high-performance
+//! network measurement over arbitrary key spaces.
+//!
+//! ## Key Features
+//! * **Arbitrary Keys**: Supports variable-length strings via `full_key` storage.
+//! * **Subset Queries**: Enables prefix and UDF-based matching through table scans.
+//! * **Biased Replacement**: Uses a probabilistic strategy to retain Heavy Hitters.
+//!
+//! ## Reference
+//! * "CocoSketch: High-Performance Sketch-based Measurement over Arbitrary Key Spaces"
+
+use crate::{SketchInput, Vector2D, hash64_seeded};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Bucket<'long_enough_sketch> {
-    // pub full_key: Option<String>,
-    #[serde(borrow)]
-    pub full_key: Option<SketchInput<'long_enough_sketch>>,
+pub struct CocoBucket {
+    pub full_key: Option<String>,
     pub val: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Coco<'long_enough_sketch> {
+pub struct Coco {
     pub w: usize,
     pub d: usize,
-    #[serde(borrow)]
-    pub table: Vec<Vec<Bucket<'long_enough_sketch>>>,
+    pub table: Vector2D<CocoBucket>,
 }
 
-impl<'long_enough_sketch> Default for Bucket<'long_enough_sketch> {
+const DEFAULT_WIDTH: usize = 64;
+const DEFAULT_DEPTH: usize = 5;
+const DEFAULT_ROW_IDX: usize = 0;
+
+impl Default for CocoBucket {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// I believe this means 'long_enough_sketch will outlive 'just_for_est
-impl<'long_enough_sketch, 'just_for_est> Bucket<'long_enough_sketch> {
+impl CocoBucket {
     pub fn new() -> Self {
-        Bucket {
+        CocoBucket {
             full_key: None,
             val: 0,
         }
     }
 
-    pub fn update_key(&mut self, key: &SketchInput<'long_enough_sketch>) {
-        self.full_key = Some(key.clone());
+    pub fn update_key(&mut self, key: &str) {
+        self.full_key = Some(key.to_string());
     }
 
     // apparently, this is far less than finish
-    pub fn is_partial_key(&mut self, partial_key: &SketchInput) -> bool {
-        match (&self.full_key, partial_key) {
-            (Some(SketchInput::String(full)), SketchInput::String(partial)) => {
-                (*full).contains(partial)
-            }
-            (Some(SketchInput::Str(full)), &SketchInput::Str(partial)) => (*full).contains(partial),
-            (Some(SketchInput::String(full)), &SketchInput::Str(partial)) => {
-                (*full).contains(partial)
-            }
-            (Some(SketchInput::Str(full)), SketchInput::String(partial)) => {
-                (*full).contains(partial)
-            }
-            _ => false,
+    pub fn is_partial_key(&mut self, partial_key: &str) -> bool {
+        match &self.full_key {
+            Some(full) => full.contains(partial_key),
+            None => false,
         }
     }
     /// the function should take in full key first, then partial key
-    pub fn is_partial_key_with_udf<F>(
-        &mut self,
-        partial_key: &SketchInput<'just_for_est>,
-        udf: F,
-    ) -> bool
+    pub fn is_partial_key_with_udf<F>(&mut self, partial_key: &str, udf: F) -> bool
     where
-        F: Fn(&SketchInput<'long_enough_sketch>, &SketchInput<'just_for_est>) -> bool,
+        F: Fn(&str, &str) -> bool,
     {
         match &self.full_key {
-            Some(k) => udf(k, partial_key),
+            Some(k) => udf(k.as_str(), partial_key),
             None => false,
         }
     }
 
     pub fn debug(&mut self) {
         match &self.full_key {
-            Some(k) => match k {
-                SketchInput::I32(i) => print!(" <i32::{}, {}> ", i, self.val),
-                SketchInput::I64(i) => print!(" <i64::{}, {}> ", i, self.val),
-                SketchInput::U32(u) => print!(" <u32::{}, {}> ", u, self.val),
-                SketchInput::U64(u) => print!(" <u64::{}, {}> ", u, self.val),
-                SketchInput::F32(f) => print!(" <f32::{}, {}> ", f, self.val),
-                SketchInput::F64(f) => print!(" <f64::{}, {}> ", f, self.val),
-                SketchInput::Str(s) => print!(" <str::{}, {}> ", s, self.val),
-                SketchInput::String(s) => print!(" <String::{}, {}> ", s, self.val),
-                SketchInput::Bytes(_items) => todo!(),
-                SketchInput::I8(_) => todo!(),
-                SketchInput::I16(_) => todo!(),
-                SketchInput::I128(_) => todo!(),
-                SketchInput::ISIZE(_) => todo!(),
-                SketchInput::U8(_) => todo!(),
-                SketchInput::U16(_) => todo!(),
-                SketchInput::U128(_) => todo!(),
-                SketchInput::USIZE(_) => todo!(),
-            },
+            Some(k) => print!(" <String::{}, {}> ", k, self.val),
             None => print!(" <None, {}> ", self.val),
         }
     }
@@ -98,15 +80,15 @@ impl<'long_enough_sketch, 'just_for_est> Bucket<'long_enough_sketch> {
     }
 }
 
-impl<'long_enough_sketch> Default for Coco<'long_enough_sketch> {
+impl Default for Coco {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
+impl Coco {
     pub fn new() -> Self {
-        Coco::init_with_size(64, 5)
+        Coco::init_with_size(DEFAULT_WIDTH, DEFAULT_DEPTH)
     }
 
     pub fn debug(&mut self) {
@@ -125,48 +107,34 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
         Coco {
             w,
             d,
-            table: vec![vec![Bucket::default(); w]; d],
+            table: Vector2D::from_fn(d, w, |_, _| CocoBucket::default()),
         }
     }
 
     // oh, unfinished again!
-    pub fn insert(&mut self, key: &SketchInput<'long_enough_sketch>, v: u64) {
+    pub fn insert(&mut self, key: &str, v: u64) {
+        if self.d == 0 || self.w == 0 {
+            return;
+        }
+        let key_input = SketchInput::Str(key);
         let mut min_val_row = usize::MAX;
         let mut min_val = u64::MAX;
         for i in 0..self.d {
             // let idx = STATELIST[i].hash_one(&key) as usize % self.w;
-            // let idx = hash_it(i, &key) as usize % self.w;
-            let idx = hash_it(i, key) as usize % self.w;
-            match (&self.table[i][idx].full_key, key) {
-                (Some(SketchInput::String(k)), SketchInput::String(key)) => {
-                    if *k == *key {
+            // let idx = hash64_seeded(i, &key) as usize % self.w;
+            let idx = hash64_seeded(i, &key_input) as usize % self.w;
+            match &self.table[i][idx].full_key {
+                Some(k) => {
+                    if k == key {
                         self.table[i][idx].val += v;
                         return;
-                    } else if self.table[i][idx].val < min_val {
-                        min_val_row = i;
-                        min_val = self.table[i][idx].val;
                     }
-                }
-                (Some(SketchInput::Str(k)), SketchInput::Str(key)) => {
-                    if *k == *key {
-                        self.table[i][idx].val += v;
-                        return;
-                    } else {
-                        // println!("i: {}, min_val: {}, cur_val: {}", i, min_val, self.table[i][idx].val);
-                        if self.table[i][idx].val < min_val {
-                            min_val_row = i;
-                            min_val = self.table[i][idx].val;
-                        }
-                    }
-                }
-                (Some(_), _) => {
-                    // as long as the type is incorrect, it is bad
                     if self.table[i][idx].val < min_val {
                         min_val_row = i;
                         min_val = self.table[i][idx].val;
                     }
                 }
-                (None, _) => {
+                None => {
                     // seems like if nothing there, I should just update, and return
                     self.table[i][idx].val += v;
                     self.table[i][idx].update_key(key);
@@ -177,18 +145,18 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
         }
         // all empty
         // println!("min val row: {}", min_val_row);
-        if min_val_row > self.d {
-            min_val_row = 0;
+        if min_val_row >= self.d {
+            min_val_row = DEFAULT_ROW_IDX;
         }
         // let idx = STATELIST[min_val_row].hash_one(&key) as usize % self.w;
-        // let idx = hash_it(min_val_row, &key) as usize % self.w;
-        let idx = hash_it(min_val_row, key) as usize % self.w;
+        // let idx = hash64_seeded(min_val_row, &key) as usize % self.w;
+        let idx = hash64_seeded(min_val_row, &key_input) as usize % self.w;
         self.table[min_val_row][idx].val += v;
         match self.table[min_val_row][idx].full_key {
             Some(_) => {
                 let mut name_decider = rand::rng();
                 let random_float = name_decider.random_range(0.0..=1.0_f64);
-                if (v as f64 / self.table[min_val_row][idx].val as f64) < random_float {
+                if (v as f64 / self.table[min_val_row][idx].val as f64) > random_float {
                     // self.table[min_val_row][idx].full_key = Some(key.clone());
                     // to make lifetime happy
                     self.table[min_val_row][idx].update_key(key);
@@ -201,14 +169,14 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
     }
 
     /// the udf parameter takes in full key first, and then partial key
-    pub fn estimate_with_udf<F>(&mut self, partial_key: SketchInput<'just_for_est>, udf: F) -> u64
+    pub fn estimate_with_udf<F>(&mut self, partial_key: &str, udf: F) -> u64
     where
-        F: Fn(&SketchInput<'long_enough_sketch>, &SketchInput<'just_for_est>) -> bool,
+        F: Fn(&str, &str) -> bool,
     {
         let mut total = 0;
         for i in 0..self.d {
             for j in 0..self.w {
-                if self.table[i][j].is_partial_key_with_udf(&partial_key, &udf) {
+                if self.table[i][j].is_partial_key_with_udf(partial_key, &udf) {
                     total += self.table[i][j].val;
                     // println!("partial: {:?}, full: {:?}, val: {}, total: {}", partial_key, self.table[i][j].full_key, self.table[i][j].val, total);
                 }
@@ -217,11 +185,11 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
         total
     }
 
-    pub fn estimate(&mut self, partial_key: SketchInput<'_>) -> u64 {
+    pub fn estimate(&mut self, partial_key: &str) -> u64 {
         let mut total = 0;
         for i in 0..self.d {
             for j in 0..self.w {
-                if self.table[i][j].is_partial_key(&partial_key) {
+                if self.table[i][j].is_partial_key(partial_key) {
                     total += self.table[i][j].val;
                 }
             }
@@ -229,13 +197,13 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
         total
     }
 
-    pub fn merge(&mut self, other: &Coco<'long_enough_sketch>) {
+    pub fn merge(&mut self, other: &Coco) {
         assert_eq!(self.d, other.d, "Different depth, do nothing");
         assert_eq!(self.w, other.w, "Different width, do nothing");
         for i in 0..self.d {
             for j in 0..self.w {
                 if let Some(k) = &other.table[i][j].full_key {
-                    self.insert(k, other.table[i][j].val);
+                    self.insert(k.as_str(), other.table[i][j].val);
                 }
             }
         }
@@ -246,55 +214,52 @@ impl<'long_enough_sketch, 'just_for_est> Coco<'long_enough_sketch> {
 mod tests {
     use super::*;
 
+    const TEST_W: usize = 32;
+    const TEST_D: usize = 4;
+
     #[test]
     fn insert_then_estimate_matches_full_value_for_partial_key() {
         // cover end-to-end flow of inserting a key and querying with a substring
-        let mut coco = Coco::init_with_size(32, 4);
-        let key = SketchInput::String("user:1234".to_string());
+        let mut coco = Coco::init_with_size(TEST_W, TEST_D);
+        let key = "user:1234";
 
-        coco.insert(&key, 3);
-        coco.insert(&key, 2);
+        coco.insert(key, 3);
+        coco.insert(key, 2);
 
-        let estimate = coco.estimate(SketchInput::Str("user"));
+        let estimate = coco.estimate("user");
         assert_eq!(estimate, 5);
     }
 
     #[test]
     fn estimate_with_udf_allows_custom_partial_matching() {
         // ensure custom UDF matching logic aggregates only intended buckets
-        let mut coco = Coco::init_with_size(32, 4);
-        coco.insert(&SketchInput::String("region=us|id=1".into()), 4);
-        coco.insert(&SketchInput::String("region=eu|id=2".into()), 6);
+        let mut coco = Coco::init_with_size(TEST_W, TEST_D);
+        coco.insert("region=us|id=1", 4);
+        coco.insert("region=eu|id=2", 6);
 
-        fn matcher(full: &SketchInput, partial: &SketchInput) -> bool {
-            match (full, partial) {
-                (SketchInput::String(f), SketchInput::Str(p)) => f.contains(p),
-                (SketchInput::Str(f), SketchInput::Str(p)) => f.contains(p),
-                (SketchInput::String(f), SketchInput::String(p)) => f.contains(p),
-                (SketchInput::Str(f), SketchInput::String(p)) => f.contains(p),
-                _ => false,
-            }
+        fn matcher(full: &str, partial: &str) -> bool {
+            full.contains(partial)
         }
 
-        let total_us = coco.estimate_with_udf(SketchInput::Str("us"), matcher);
+        let total_us = coco.estimate_with_udf("us", matcher);
         assert_eq!(total_us, 4);
 
-        let total_all = coco.estimate_with_udf(SketchInput::Str("region"), matcher);
+        let total_all = coco.estimate_with_udf("region", matcher);
         assert_eq!(total_all, 10);
     }
 
     #[test]
     fn merge_combines_tables_without_losing_counts() {
         // verify merging replays entries so both sketches contribute to totals
-        let mut left = Coco::init_with_size(32, 4);
-        let mut right = Coco::init_with_size(32, 4);
+        let mut left = Coco::init_with_size(TEST_W, TEST_D);
+        let mut right = Coco::init_with_size(TEST_W, TEST_D);
 
-        left.insert(&SketchInput::String("alpha:key".into()), 7);
-        right.insert(&SketchInput::String("beta:key".into()), 11);
+        left.insert("alpha:key", 7);
+        right.insert("beta:key", 11);
 
         left.merge(&right);
 
-        assert_eq!(left.estimate(SketchInput::Str("alpha")), 7);
-        assert_eq!(left.estimate(SketchInput::Str("beta")), 11);
+        assert_eq!(left.estimate("alpha"), 7);
+        assert_eq!(left.estimate("beta"), 11);
     }
 }

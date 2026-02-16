@@ -12,6 +12,7 @@ rmp-serde = "1.3.0"
 twox-hash = "2.1.2"
 pcap = "1.1" 
 clap = { version = "4.0", features = ["derive"] }
+smallvec = "1.13.2"
 
 [dev-dependencies]
 criterion = "0.5"

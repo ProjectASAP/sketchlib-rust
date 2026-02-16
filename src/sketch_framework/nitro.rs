@@ -6,11 +6,22 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng, rng};
 use serde::{Deserialize, Serialize};
 
-use crate::{PRECOMPUTED_SAMPLE_RATE_1PERCENT, SketchInput, Vector2D, hash_it_to_128};
+use crate::{
+    Count, CountMin, FastPath, PRECOMPUTED_SAMPLE_RATE_1PERCENT, SketchInput, Vector2D,
+    hash128_seeded,
+};
 
 pub trait NitroTarget {
     fn rows(&self) -> usize;
     fn update_row(&mut self, row: usize, hashed: u128, delta: u64);
+}
+
+pub trait NitroMerge {
+    fn merge(&mut self, other: &Self);
+}
+
+pub trait NitroEstimate {
+    fn estimate_median(&self, value: &SketchInput) -> f64;
 }
 
 impl NitroTarget for Vector2D<u32> {
@@ -22,6 +33,34 @@ impl NitroTarget for Vector2D<u32> {
     #[inline(always)]
     fn update_row(&mut self, row: usize, hashed: u128, delta: u64) {
         self.update_by_row(row, hashed, |a, b| *a += b as u32, delta);
+    }
+}
+
+impl NitroMerge for CountMin<Vector2D<i32>, FastPath> {
+    #[inline(always)]
+    fn merge(&mut self, other: &Self) {
+        CountMin::merge(self, other);
+    }
+}
+
+impl NitroEstimate for CountMin<Vector2D<i32>, FastPath> {
+    #[inline(always)]
+    fn estimate_median(&self, value: &SketchInput) -> f64 {
+        self.nitro_estimate(value)
+    }
+}
+
+impl NitroMerge for Count<Vector2D<i32>, FastPath> {
+    #[inline(always)]
+    fn merge(&mut self, other: &Self) {
+        Count::merge(self, other);
+    }
+}
+
+impl NitroEstimate for Count<Vector2D<i32>, FastPath> {
+    #[inline(always)]
+    fn estimate_median(&self, value: &SketchInput) -> f64 {
+        self.estimate(value)
     }
 }
 
@@ -190,7 +229,7 @@ impl<S: NitroTarget> NitroBatch<S> {
         let mut position = self.to_skip;
         while position < data.len() {
             let row_to_update = position % rows;
-            let hashed = hash_it_to_128(0, &SketchInput::I64(data[position]));
+            let hashed = hash128_seeded(0, &SketchInput::I64(data[position]));
             self.sk.update_row(row_to_update, hashed, self.delta);
             self.draw_geometric();
             position += self.to_skip + 1;
@@ -204,11 +243,149 @@ impl<S: NitroTarget> NitroBatch<S> {
         let mut position = self.to_skip;
         while position < data.len() {
             let row_to_update = position % rows;
-            let hashed = hash_it_to_128(0, &SketchInput::I64(data[position]));
+            let hashed = hash128_seeded(0, &SketchInput::I64(data[position]));
             self.sk.update_row(row_to_update, hashed, self.delta);
             self.to_skip = PRECOMPUTED_SAMPLE_RATE_1PERCENT[self.idx].ceil() as usize;
             self.idx = (self.idx + 1) & self.mask;
             position += self.to_skip + 1;
         }
+    }
+}
+
+impl<S: NitroTarget + NitroMerge> NitroBatch<S> {
+    pub fn merge(&mut self, other: &Self) {
+        assert!(
+            (self.sampling_rate - other.sampling_rate).abs() <= f64::EPSILON,
+            "nitro merge requires matching sampling rates"
+        );
+        self.sk.merge(&other.sk);
+    }
+}
+
+impl<S: NitroTarget + NitroEstimate> NitroBatch<S> {
+    pub fn estimate_median(&self, value: &SketchInput) -> f64 {
+        self.sk.estimate_median(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::sample_zipf_u64;
+    use crate::{SketchInput, compute_median_inline_f64};
+    use std::collections::HashMap;
+
+    fn nitro_countmin_estimate(storage: &Vector2D<i32>, key: &SketchInput) -> f64 {
+        let rows = storage.rows();
+        let mask_bits = storage.get_mask_bits() as usize;
+        let mask = (1u128 << mask_bits) - 1;
+        let hashed = hash128_seeded(0, key);
+        let mut min = i32::MAX;
+        for row in 0..rows {
+            let col = ((hashed >> (mask_bits * row)) & mask) as usize;
+            let val = storage.query_one_counter(row, col);
+            if val < min {
+                min = val;
+            }
+        }
+        min as f64
+    }
+
+    fn nitro_count_estimate(storage: &Vector2D<i32>, key: &SketchInput) -> f64 {
+        let rows = storage.rows();
+        let mask_bits = storage.get_mask_bits() as usize;
+        let mask = (1u128 << mask_bits) - 1;
+        let hashed = hash128_seeded(0, key);
+        let mut estimates = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let col = ((hashed >> (mask_bits * row)) & mask) as usize;
+            let val = storage.query_one_counter(row, col) as f64;
+            let bit = (hashed >> (127 - row)) & 1;
+            let sign = (bit as i32 * 2 - 1) as f64;
+            estimates.push(sign * val);
+        }
+        compute_median_inline_f64(&mut estimates)
+    }
+
+    #[test]
+    fn nitro_batch_countmin_error_bound_zipf() {
+        let rows = 3;
+        let cols = 4096;
+        let domain = 8192;
+        let exponent = 1.1;
+        let samples = 200_000;
+        let seed = 0x5eed_c0de;
+
+        let mut truth = HashMap::<i64, u64>::new();
+        let data: Vec<i64> = sample_zipf_u64(domain, exponent, samples, seed)
+            .into_iter()
+            .map(|v| {
+                let key = v as i64;
+                *truth.entry(key).or_insert(0) += 1;
+                key
+            })
+            .collect();
+
+        let cm = CountMin::<Vector2D<i32>, FastPath>::with_dimensions(rows, cols);
+        let mut batch = NitroBatch::with_target(1.0, cm);
+        batch.insert(&data);
+
+        let epsilon = std::f64::consts::E / cols as f64;
+        let delta = 1.0 / std::f64::consts::E.powi(rows as i32);
+        let error_bound = epsilon * samples as f64;
+        let correct_lower_bound = truth.len() as f64 * (1.0 - delta);
+        let storage = batch.target().as_storage();
+        let mut within_count = 0;
+        for key in truth.keys() {
+            let est = nitro_countmin_estimate(storage, &SketchInput::I64(*key));
+            if (est - (*truth.get(key).unwrap() as f64)).abs() < error_bound {
+                within_count += 1;
+            }
+        }
+        assert!(
+            within_count as f64 > correct_lower_bound,
+            "in-bound items number {within_count} not greater than expected amount {correct_lower_bound}"
+        );
+    }
+
+    #[test]
+    fn nitro_batch_count_error_bound_zipf() {
+        let rows = 3;
+        let cols = 4096;
+        let domain = 8192;
+        let exponent = 1.1;
+        let samples = 200_000;
+        let seed = 0x5eed_c0de;
+
+        let mut truth = HashMap::<i64, u64>::new();
+        let data: Vec<i64> = sample_zipf_u64(domain, exponent, samples, seed)
+            .into_iter()
+            .map(|v| {
+                let key = v as i64;
+                *truth.entry(key).or_insert(0) += 1;
+                key
+            })
+            .collect();
+
+        let cs = Count::<Vector2D<i32>, FastPath>::with_dimensions(rows, cols);
+        let mut batch = NitroBatch::with_target(1.0, cs);
+        batch.insert(&data);
+
+        let epsilon = std::f64::consts::E / cols as f64;
+        let delta = 1.0 / std::f64::consts::E.powi(rows as i32);
+        let error_bound = epsilon * samples as f64;
+        let correct_lower_bound = truth.len() as f64 * (1.0 - delta);
+        let storage = batch.target().as_storage();
+        let mut within_count = 0;
+        for key in truth.keys() {
+            let est = nitro_count_estimate(storage, &SketchInput::I64(*key));
+            if (est - (*truth.get(key).unwrap() as f64)).abs() < error_bound {
+                within_count += 1;
+            }
+        }
+        assert!(
+            within_count as f64 > correct_lower_bound,
+            "in-bound items number {within_count} not greater than expected amount {correct_lower_bound}"
+        );
     }
 }

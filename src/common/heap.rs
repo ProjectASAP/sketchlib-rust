@@ -6,7 +6,7 @@
 
 use crate::common::input::HHItem;
 use crate::common::{CommonHeap, KeepSmallest};
-use crate::{HeapItem, SketchInput, hash_it_to_64, hash_item_to_64, input_to_owned};
+use crate::{HeapItem, SketchInput, hash_item64_seeded, hash64_seeded, input_to_owned};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -158,12 +158,12 @@ impl HHHeap {
 
     #[inline]
     fn slot_for_input(&self, key: &SketchInput) -> u64 {
-        hash_it_to_64(0, key)
+        hash64_seeded(0, key)
     }
 
     #[inline]
     fn slot_for_item(&self, key: &HeapItem) -> u64 {
-        hash_item_to_64(0, key)
+        hash_item64_seeded(0, key)
     }
 }
 

@@ -1,6 +1,6 @@
 pub mod coco;
-pub use coco::Bucket;
 pub use coco::Coco;
+pub use coco::CocoBucket;
 
 pub mod count;
 pub use count::Count;
@@ -11,7 +11,7 @@ pub use mode::{FastPath, RegularPath};
 
 pub mod countmin;
 pub use crate::MatrixStorage;
-pub use countmin::{CountMin, QUICKSTART_COL_NUM, QUICKSTART_ROW_NUM, XLCountMin};
+pub use countmin::{CountMin, QUICKSTART_COL_NUM, QUICKSTART_ROW_NUM};
 // pub use countmin::MicroScopeCM;
 
 pub mod elastic;
@@ -19,9 +19,7 @@ pub use elastic::Elastic;
 pub use elastic::HeavyBucket;
 
 pub mod hll;
-pub use hll::HllDf;
-pub use hll::HllDs;
-pub use hll::HyperLogLog;
+pub use hll::{DataFusion, HyperLogLog, HyperLogLogHIP, Regular};
 // pub use hll::HLL;
 // pub use hll::HLLDataFusion;
 // pub use hll::HLLHIP;

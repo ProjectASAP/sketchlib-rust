@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::input::{HydraCounter, HydraQuery};
 use crate::{CountMin, FastPath, Vector2D};
-use crate::{HYDRA_SEED, SketchInput, hash_it_to_128};
+use crate::{HYDRA_SEED, SketchInput, hash_for_matrix_seeded};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hydra {
@@ -62,9 +62,14 @@ impl Hydra {
 
             // Insert immediately instead of collecting all combinations first
             // Use Str(&str) variant to avoid cloning the buffer
-            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::Str(&buffer));
+            let hash = hash_for_matrix_seeded(
+                HYDRA_SEED,
+                self.row_num,
+                self.col_num,
+                &SketchInput::Str(&buffer),
+            );
             self.sketches
-                .fast_insert(|a, b, _| a.insert(b, count), value, hash);
+                .fast_insert(|a, b, _| a.insert(b, count), value, &hash);
         }
 
         // Original implementation (kept for reference):
@@ -81,7 +86,7 @@ impl Hydra {
         // }
         //
         // for subkey in &result {
-        //     let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
+        //     let hash = hash128_seeded(HYDRA_SEED, &SketchInput::String(subkey.to_string()));
         //     self.sketches
         //         .fast_insert(|a, b, _| a.insert(b, count), value, hash);
         // }
@@ -119,9 +124,14 @@ impl Hydra {
     /// The estimated statistic (median of r row estimates)
     pub fn query_key(&self, key: Vec<&str>, query: &HydraQuery) -> f64 {
         let key_string = key.join(";");
-        let hashed_val = hash_it_to_128(HYDRA_SEED, &SketchInput::String(key_string.to_string()));
+        let hashed_val = hash_for_matrix_seeded(
+            HYDRA_SEED,
+            self.row_num,
+            self.col_num,
+            &SketchInput::String(key_string.to_string()),
+        );
         self.sketches
-            .fast_query_median_with_key(hashed_val, query, |counter, q, _, _| {
+            .fast_query_median_with_key(&hashed_val, query, |counter, q, _, _| {
                 counter.query(q).unwrap()
             })
     }
@@ -153,20 +163,23 @@ impl Hydra {
 pub struct MultiHeadHydra {
     pub row_num: usize,
     pub col_num: usize,
-    pub sketches: Vector2D<HashMap<String, HydraCounter>>,
+    pub sketches: Vector2D<Vec<HydraCounter>>,
     pub dimensions: Vec<(String, HydraCounter)>,
 }
 
 impl MultiHeadHydra {
+    pub fn dimension_index(&self, dimension: &str) -> Option<usize> {
+        self.dimensions
+            .iter()
+            .position(|(name, _)| name == dimension)
+    }
+
     pub fn with_dimensions(r: usize, c: usize, dimensions: Vec<(String, HydraCounter)>) -> Self {
-        let template = &dimensions;
-        let sketches = Vector2D::from_fn(r, c, |_, _| {
-            let mut cell_map = HashMap::with_capacity(template.len());
-            for (name, counter) in template.iter() {
-                cell_map.insert(name.clone(), counter.clone());
-            }
-            cell_map
-        });
+        let template: Vec<HydraCounter> = dimensions
+            .iter()
+            .map(|(_, counter)| counter.clone())
+            .collect();
+        let sketches = Vector2D::from_fn(r, c, |_, _| template.clone());
         MultiHeadHydra {
             row_num: r,
             col_num: c,
@@ -175,10 +188,26 @@ impl MultiHeadHydra {
         }
     }
 
-    /// Single fan-out, insert multiple values to different dimensions
-    pub fn update(&mut self, key: &str, values: &[(&str, &SketchInput)], count: Option<i32>) {
+    /// Single fan-out, insert multiple values to different dimension sets
+    pub fn update(&mut self, key: &str, values: &[(&SketchInput, &[&str])], count: Option<i32>) {
         let parts: Vec<&str> = key.split(';').filter(|s| !s.is_empty()).collect();
         let n = parts.len();
+
+        let dim_name_to_idx: HashMap<&str, usize> = self
+            .dimensions
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, _))| (name.as_str(), idx))
+            .collect();
+        let precomputed: Vec<Vec<usize>> = values
+            .iter()
+            .map(|(_, dims)| {
+                dims.iter()
+                    .filter_map(|dim_name| dim_name_to_idx.get(*dim_name).copied())
+                    .collect()
+            })
+            .collect();
+        let updates = (values, &precomputed);
 
         // Reuse a single buffer to minimize allocations
         let mut buffer = String::with_capacity(key.len());
@@ -197,18 +226,29 @@ impl MultiHeadHydra {
 
             // Insert immediately instead of collecting all combinations first
             // Use Str(&str) variant to avoid cloning the buffer
-            let hash = hash_it_to_128(HYDRA_SEED, &SketchInput::Str(&buffer));
+            let hash = hash_for_matrix_seeded(
+                HYDRA_SEED,
+                self.row_num,
+                self.col_num,
+                &SketchInput::Str(&buffer),
+            );
             self.sketches.fast_insert(
-                |cell_map, dim_values, _| {
-                    for &(dim_name, value) in (*dim_values).iter() {
-                        if let Some(counter) = cell_map.get_mut(dim_name) {
-                            let value_hash = hash_it_to_128(0, value);
-                            counter.insert_with_hash(value, value_hash, count);
+                |cell_vec, dim_values, _| {
+                    let (values, precomputed) = dim_values;
+                    for ((value, _), indices) in values.iter().zip(precomputed.iter()) {
+                        for &idx in indices.iter() {
+                            if let Some(counter) = cell_vec.get_mut(idx) {
+                                if let Some(hash) = counter.hash_for_value(value) {
+                                    counter.insert_with_hash(value, &hash, count);
+                                } else {
+                                    counter.insert(value, count);
+                                }
+                            }
                         }
                     }
                 },
-                values,
-                hash,
+                updates,
+                &hash,
             );
         }
     }
@@ -221,15 +261,15 @@ impl MultiHeadHydra {
         if self.dimensions.len() != other.dimensions.len() {
             return Err("MultiHeadHydra dimension list mismatch while merging".to_string());
         }
-        for (name, counter) in self.dimensions.iter() {
-            let other_counter = other
-                .dimensions
-                .iter()
-                .find(|(other_name, _)| other_name == name)
-                .map(|(_, counter)| counter)
-                .ok_or_else(|| {
-                    format!("MultiHeadHydra missing dimension '{}' while merging", name)
-                })?;
+        for (idx, (name, counter)) in self.dimensions.iter().enumerate() {
+            let (other_name, other_counter) = other.dimensions.get(idx).ok_or_else(|| {
+                "MultiHeadHydra dimension list mismatch while merging".to_string()
+            })?;
+            if name != other_name {
+                return Err(format!(
+                    "MultiHeadHydra dimension order mismatch at index {idx}"
+                ));
+            }
             if std::mem::discriminant(counter) != std::mem::discriminant(other_counter) {
                 return Err(format!(
                     "MultiHeadHydra counter type mismatch for dimension '{}'",
@@ -238,30 +278,24 @@ impl MultiHeadHydra {
             }
         }
 
-        let dim_names: Vec<&str> = self
-            .dimensions
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect();
         let self_cells = self.sketches.as_mut_slice();
         let other_cells = other.sketches.as_slice();
         if self_cells.len() != other_cells.len() {
             return Err("MultiHeadHydra storage length mismatch while merging".to_string());
         }
         for (self_cell, other_cell) in self_cells.iter_mut().zip(other_cells.iter()) {
-            for dim_name in dim_names.iter() {
-                let self_counter = self_cell.get_mut(*dim_name).ok_or_else(|| {
-                    format!(
-                        "MultiHeadHydra missing dimension '{}' in target cell",
-                        dim_name
-                    )
-                })?;
-                let other_counter = other_cell.get(*dim_name).ok_or_else(|| {
-                    format!(
-                        "MultiHeadHydra missing dimension '{}' in source cell",
-                        dim_name
-                    )
-                })?;
+            if self_cell.len() != self.dimensions.len()
+                || other_cell.len() != other.dimensions.len()
+            {
+                return Err("MultiHeadHydra cell dimension mismatch while merging".to_string());
+            }
+            for idx in 0..self.dimensions.len() {
+                let self_counter = self_cell
+                    .get_mut(idx)
+                    .ok_or_else(|| "MultiHeadHydra missing dimension in target cell".to_string())?;
+                let other_counter = other_cell
+                    .get(idx)
+                    .ok_or_else(|| "MultiHeadHydra missing dimension in source cell".to_string())?;
                 self_counter.merge(other_counter)?;
             }
         }
@@ -272,12 +306,21 @@ impl MultiHeadHydra {
     /// Query a specific dimension
     pub fn query_key(&self, key: Vec<&str>, dimension: &str, query: &HydraQuery) -> f64 {
         let key_string = key.join(";");
-        let hashed_val = hash_it_to_128(HYDRA_SEED, &SketchInput::String(key_string));
+        let hashed_val = hash_for_matrix_seeded(
+            HYDRA_SEED,
+            self.row_num,
+            self.col_num,
+            &SketchInput::String(key_string),
+        );
 
+        let dim_idx = match self.dimension_index(dimension) {
+            Some(idx) => idx,
+            None => return 0.0,
+        };
         self.sketches
-            .fast_query_median_with_key(hashed_val, query, |cell_map, q, _, _| {
-                cell_map
-                    .get(dimension)
+            .fast_query_median_with_key(&hashed_val, query, |cell_vec, q, _, _| {
+                cell_vec
+                    .get(dim_idx)
                     .map(|counter| counter.query(q).unwrap())
                     .unwrap_or(0.0)
             })
@@ -287,7 +330,7 @@ impl MultiHeadHydra {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Count, CountMin, FastPath, HllDf, KLL, UnivMon, Vector2D};
+    use crate::{Count, CountMin, DataFusion, FastPath, HyperLogLog, KLL, UnivMon, Vector2D};
 
     const EPSILON: f64 = 1e-6;
 
@@ -443,7 +486,7 @@ mod tests {
         for _ in 0..3 {
             hydra.update(
                 "user;session",
-                &[("events", &event_value), ("latency", &latency_value)],
+                &[(&event_value, &["events"]), (&latency_value, &["latency"])],
                 None,
             );
         }
@@ -559,10 +602,11 @@ mod tests {
 
     #[test]
     fn hydra_subpopulation_cardinality_test() {
-        use crate::sketches::hll::HllDf;
+        use crate::sketches::hll::{DataFusion, HyperLogLog};
 
         // Build test dataset using HyperLogLog for cardinality queries
-        let mut hydra = Hydra::with_dimensions(5, 128, HydraCounter::HLL(HllDf::new()));
+        let mut hydra =
+            Hydra::with_dimensions(5, 128, HydraCounter::HLL(HyperLogLog::<DataFusion>::new()));
 
         let dataset = [
             ("key1;key2;key3", 10.0),
@@ -756,7 +800,7 @@ mod tests {
 
     #[test]
     fn test_hll_cardinality_query() {
-        let mut counter = HydraCounter::HLL(HllDf::default());
+        let mut counter = HydraCounter::HLL(HyperLogLog::<DataFusion>::default());
 
         // 1. Insert unique items
         for i in 0..100 {
@@ -852,7 +896,7 @@ mod tests {
         assert_eq!(count, 2.0, "Merge should sum the counts");
 
         // Invalid merge (Different types)
-        let hll = HydraCounter::HLL(HllDf::default());
+        let hll = HydraCounter::HLL(HyperLogLog::<DataFusion>::default());
         assert!(c1.merge(&hll).is_err());
     }
 

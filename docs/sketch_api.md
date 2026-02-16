@@ -1,31 +1,33 @@
 # Sketch API
 
-In this document is the comprehensive list of API of the sketches.
+In this document is a list of the public APIs of the sketches.
 
-## Sketch Status Legend
+## Sketch Status
 
-Throughout this document, sketches are marked with status badges:
+Core sketches and frameworks are **✅ RECOMMENDED** (optimized, maintained, and used by the
+frameworks). Additional sketches are **⚠️ legacy/experimental** and may have rough edges.
 
-- **✅ RECOMMENDED** - Built on the common structure ([common_api.md](common_api.md)), optimized, and actively maintained. Use these for new projects.
-- **⚠️ LEGACY** - Older implementations not using the common structure. Not recommended for new use, but still functional.
-
-### Recommended Sketches (Common Structure)
-
-The following sketches are built on the common API structure and are recommended for use:
+### Recommended (Structured) Sketches
 
 - **CountMin (CMS)** - Frequency estimation
 - **Count Sketch (CS)** - Frequency estimation with both standard and L2HH variants
-- **HyperLogLog (HLL)** - Cardinality estimation (all three variants)
+- **HyperLogLog** - Cardinality estimation (Regular, DataFusion, HIP)
 - **Hydra** - Framework for hierarchical heavy hitters
 - **UnivMon** - Framework for universal monitoring
+- **HashLayer** - Hash-reuse orchestration for multiple sketches
+- **NitroBatch** - Batch-mode sampling wrapper for sketches
+- **Orchestrator** - Node-level manager for sketches and frameworks
 
-### Legacy Sketches
+### Legacy / Experimental Sketches
 
-The following sketches are legacy implementations and not recommended for new projects:
-
-- Coco, Elastic, KLL, UniformSampling, MicroScope, Locher
-
-These legacy sketches are functional but do not use the optimized common structure with `Vector2D`, `Vector1D`, and shared hashing primitives.
+- **KLL** - Quantile estimation with mergeable compactors
+- **DDSketch** - Quantile estimation with relative error guarantees
+- **Elastic** - Heavy/light split CMS
+- **Coco** - Substring aggregation
+- **Locher** - Heavy hitter sampling
+- **MicroScope** - Compact CMS variant
+- **UniformSampling** - Reservoir sampling
+- **KMV** - K-minimum values
 
 ---
 
@@ -34,42 +36,60 @@ These legacy sketches are functional but do not use the optimized common structu
 1. [Frequency Sketches](#frequency-sketches)
 2. [Cardinality Sketches](#cardinality-sketches)
 3. [Quantile Sketches](#quantile-sketches)
-4. [Sampling](#sampling)
-5. [Windowed Sketches](#windowed-sketches)
-6. [Heavy Hitters](#heavy-hitters)
-7. [Frameworks](#frameworks)
-8. [Usage Examples](#usage-examples)
+4. [Frameworks](#frameworks)
+5. [Usage Examples](#usage-examples)
 
 ---
 
 ## Frequency Sketches
 
-### CountMin (CMS) ✅ RECOMMENDED
+### CountMin (CMS)
 
 **File:** [src/sketches/countmin.rs](../src/sketches/countmin.rs)
 
-There is one version of CountMin sketch that is built based on the Common API. Count-Min sketch provides approximate frequency counting with sub-linear space using multiple hash functions and returns the minimum counter value.
+Count-Min sketch provides approximate frequency counting with sub-linear space using multiple hash functions and returns the minimum counter value.
+
+**Type:** `CountMin<S = Vector2D<i32>, Mode = RegularPath>`
+
+**Storage options:**
+
+- `Vector2D<i32>`: dynamic dimensions, `HashValueType = MatrixHashType`
+- `DefaultMatrixI32`: fixed 3 × 4096, `HashValueType = u64`
+- `QuickMatrixI32`: fixed 5 × 2048, `HashValueType = u64`
+- `FixedMatrix`: alias of `QuickMatrixI32` (fixed 5 × 2048), `HashValueType = u64`
+
+**Mode options:**
+
+- `RegularPath`: per-row hashing
+- `FastPath`: single hash reused across rows
+
+Mode and storage types mirror CountMin and enforce matching insert/estimate paths.
+
+Mode and storage are part of the type signature, so insert/estimate pairs and
+hash widths are enforced by the type system.
 
 **Constructor Methods:**
 
 ```rust
 fn default() -> Self                           // 3 rows × 4096 columns
-fn with_dimensions(rows: usize, cols: usize) -> Self
+fn with_dimensions(rows: usize, cols: usize) -> Self  // Vector2D only
+fn from_storage(counts: S) -> Self
 ```
 
-**Insert Methods:**
+**Insert & Query (RegularPath):**
 
 ```rust
-fn insert(&mut self, value: &SketchInput)                    // Standard insert
-fn fast_insert(&mut self, value: &SketchInput)               // Optimized insert
-fn fast_insert_with_hash_value(&mut self, hashed_val: u128) // Pre-computed hash
+fn insert(&mut self, value: &SketchInput)
+fn estimate(&self, value: &SketchInput) -> S::Counter
 ```
 
-**Query Methods:**
+**Insert & Query (FastPath):**
 
 ```rust
-fn estimate(&self, value: &SketchInput) -> u64      // Frequency estimate
-fn fast_estimate(&self, value: &SketchInput) -> u64 // Optimized query
+fn insert(&mut self, value: &SketchInput)
+fn estimate(&self, value: &SketchInput) -> S::Counter
+fn fast_insert_with_hash_value(&mut self, hashed_val: &S::HashValueType)
+fn fast_estimate_with_hash(&self, hashed_val: &S::HashValueType) -> S::Counter
 ```
 
 **Merge Methods:**
@@ -90,42 +110,58 @@ fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```rust
 fn rows(&self) -> usize
 fn cols(&self) -> usize
-fn as_storage(&self) -> &Vector2D<u64>
-fn debug(&self)
+fn as_storage(&self) -> &S
+fn as_storage_mut(&mut self) -> &mut S
 ```
 
 ---
 
-### Count Sketch (CS) ✅ RECOMMENDED
+### Count Sketch (CS)
 
 **File:** [src/sketches/count.rs](../src/sketches/count.rs)
 
-There are two versions of the Count Sketch: standard Count Sketch, and Count Sketch optimized for L2-Heavy-Hitter (which will be helpful to UnivMon).
+There are two versions of the Count Sketch: standard Count Sketch, and Count Sketch optimized for L2-Heavy-Hitter (which is used by UnivMon).
 
 #### Count (Standard Count Sketch)
 
 Count Sketch uses signed counters and random hash functions to provide unbiased frequency estimates. Returns the median of row estimates.
 
+**Type:** `Count<S = Vector2D<i32>, Mode = RegularPath>`
+
+**Storage options:**
+
+- `Vector2D<i32>`: dynamic dimensions, `HashValueType = MatrixHashType`
+- `DefaultMatrixI32`: fixed 3 × 4096, `HashValueType = u64`
+- `QuickMatrixI32`: fixed 5 × 2048, `HashValueType = u64`
+- `FixedMatrix`: alias of `QuickMatrixI32` (fixed 5 × 2048), `HashValueType = u64`
+
+**Mode options:**
+
+- `RegularPath`: per-row hashing
+- `FastPath`: single hash reused across rows
+
 **Constructor Methods:**
 
 ```rust
 fn default() -> Self                           // 3 rows × 4096 columns
-fn with_dimensions(rows: usize, cols: usize) -> Self
+fn with_dimensions(rows: usize, cols: usize) -> Self  // Vector2D only
+fn from_storage(counts: S) -> Self
 ```
 
-**Insert Methods:**
+**Insert & Query (RegularPath):**
 
 ```rust
-fn insert(&mut self, value: &SketchInput)                    // Signed update (±1)
-fn fast_insert(&mut self, value: &SketchInput)               // Optimized insert
-fn fast_insert_with_hash_value(&mut self, hashed_val: u128) // Pre-computed hash
+fn insert(&mut self, value: &SketchInput)
+fn estimate(&self, value: &SketchInput) -> f64
 ```
 
-**Query Methods:**
+**Insert & Query (FastPath):**
 
 ```rust
-fn estimate(&self, value: &SketchInput) -> f64      // Median of rows
-fn fast_estimate(&self, value: &SketchInput) -> f64 // Optimized query
+fn insert(&mut self, value: &SketchInput)
+fn estimate(&self, value: &SketchInput) -> f64
+fn fast_insert_with_hash_value(&mut self, hashed_val: &S::HashValueType)
+fn fast_estimate_with_hash(&self, hashed_val: &S::HashValueType) -> f64
 ```
 
 **Merge & Serialization:** Same pattern as CountMin
@@ -148,9 +184,8 @@ fn with_dimensions_and_seed(rows: usize, cols: usize, seed_idx: usize) -> Self
 
 ```rust
 fn fast_insert_with_count(&mut self, val: &SketchInput, c: i64)                     // With L2 update
-fn fast_insert_with_count_without_l2(&mut self, val: &SketchInput, c: i64)          // Without L2
-fn fast_insert_with_count_and_hash(&mut self, hashed_val: u128, c: i64)             // Pre-computed hash
-fn fast_insert_with_count_without_l2_and_hash(&mut self, hashed_val: u128, c: i64)
+fn fast_insert_with_count_and_hash(&mut self, hashed_val: u128, c: i64)             // With L2 (pre-hash)
+fn fast_insert_with_count_without_l2_and_hash(&mut self, hashed_val: u128, c: i64)  // Without L2 (pre-hash)
 ```
 
 **Query Methods:**
@@ -166,275 +201,200 @@ fn get_l2_sqr(&self) -> f64    // Squared L2 norm
 
 ---
 
-### Coco (Count-Min with Counters) ⚠️ LEGACY
-
-**File:** [src/sketches/coco.rs](../src/sketches/coco.rs)
-
-Coco sketch combines Count-Min with full key storage for exact partial key matching and aggregation.
-
-**Constructor Methods:**
-
-```rust
-fn new() -> Self                                // 64 × 5 table
-fn init_with_size(w: usize, d: usize) -> Self  // Custom dimensions
-```
-
-**Insert/Query Methods:**
-
-```rust
-fn insert(&mut self, key: &SketchInput, v: u64)  // Insert key-value
-fn estimate(&mut self, partial_key: SketchInput) -> u64  // Partial key match
-fn estimate_with_udf<F>(&mut self, partial_key: SketchInput, udf: F) -> u64  // Custom matcher
-```
-
-**Merge Methods:**
-
-```rust
-fn merge(&mut self, other: &Coco)  // Replay-based merging
-```
-
----
-
-### Elastic ⚠️ LEGACY
-
-**File:** [src/sketches/elastic.rs](../src/sketches/elastic.rs)
-
-Elastic sketch separates heavy hitters (elephant flows) from light flows using a two-part structure with voting-based eviction.
-
-**Constructor Methods:**
-
-```rust
-fn new() -> Self                   // 8 heavy buckets
-fn init_with_length(l: i32) -> Self  // Custom buckets
-```
-
-**Insert/Query Methods:**
-
-```rust
-fn insert(&mut self, id: String)      // Insert flow ID
-fn query(&mut self, id: String) -> i32  // Frequency estimate
-```
-
----
-
 ## Cardinality Sketches
 
-### HyperLogLog ✅ RECOMMENDED
+### HyperLogLog
 
 **File:** [src/sketches/hll.rs](../src/sketches/hll.rs)
 
-There are three types of HyperLogLog with different characteristics:
+There are three HyperLogLog variants with different characteristics:
 
-#### HyperLogLog (Original)
+#### HyperLogLog<Regular> (Classic)
 
 Implements the algorithm from the original paper.
 
-- **Accuracy:** Not good when correction is needed after raw estimation
+- **Accuracy:** Solid baseline; uses classic bias correction
 - **Mergeable:** Yes
 - **Speed:** Standard
 
 ```rust
 fn new() -> Self                    // 16384 registers (14-bit precision)
 fn insert(&mut self, obj: &SketchInput)
-fn get_est(&self) -> usize          // Cardinality with bias correction
-fn merge(&mut self, other: &HyperLogLog)
+fn estimate(&self) -> usize         // Cardinality estimate
+fn merge(&mut self, other: &Self)
+```
+
+**Serialization:**
+
+```rust
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```
 
 ---
 
-#### HllDf (DataFusion/Redis Algorithm)
+#### HyperLogLog<DataFusion> (Ertl Estimator)
 
-Modified from DataFusion's HLL, same algorithm as Redis HLL. Modified to make it easier for serialization.
+Implements Otmar Ertl's improved estimator (as used in DataFusion/Redis-style HLL).
 
-- **Accuracy:** Good and mergeable
-- **Insertion speed:** Same as original HyperLogLog
-- **Query speed:** Similar to original HyperLogLog
+- **Accuracy:** Improved relative to classic
+- **Mergeable:** Yes
+- **Speed:** Similar to classic
 
 ```rust
 fn new() -> Self
 fn insert(&mut self, obj: &SketchInput)
-fn get_est(&self) -> usize          // Improved estimation using Ertl's algorithm
-fn merge(&mut self, other: &HllDf)
+fn estimate(&self) -> usize         // Ertl estimator
+fn merge(&mut self, other: &Self)
+```
+
+**Serialization:**
+
+```rust
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```
 
 ---
 
-#### HllDs (Apache DataSketches HIP Estimator)
+#### HyperLogLogHIP (HIP Estimator)
 
-Apache DataSketches-Java's HLL algorithm, also called HIP (Historical Inverse Probability) Estimator.
+HIP (Historical Inverse Probability) estimator, ported from Apache DataSketches.
 
 - **Accuracy:** Good, but **NOT mergeable**
-- **Insertion speed:** Slightly slower than original (needs to update 3 more counters)
-- **Query speed:** Super fast (one counter is the estimation, just return that counter)
+- **Insertion speed:** Slightly slower than classic (extra counters)
+- **Query speed:** O(1) (maintains streaming estimate)
 
 ```rust
 fn new() -> Self
-fn insert(&mut self, obj: &SketchInput)  // Updates streaming estimate
-fn get_est(&self) -> usize               // Returns streaming estimate (O(1))
-fn merge(&mut self, _: &HllDs)           // PANICS - not supported
+fn insert(&mut self, obj: &SketchInput)
+fn estimate(&self) -> usize         // Streaming estimate (O(1))
 ```
 
-**Note:** Choose HllDf for merge operations, HllDs for fastest query performance in non-merge scenarios.
+**Serialization:**
+
+```rust
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
+```
+
+**Note:** Use `HyperLogLog<DataFusion>` when mergeability matters; use `HyperLogLogHIP` for fastest query in non-merge scenarios.
 
 ---
 
 ## Quantile Sketches
 
-### KLL ⚠️ LEGACY
+### KLL
 
 **File:** [src/sketches/kll.rs](../src/sketches/kll.rs)
 
-KLL (Karnin-Lang-Liberty) sketch provides approximate quantiles with mergeable compactors.
+KLL (Karnin-Lang-Liberty) sketch provides approximate quantiles with mergeable compactors and rank-error guarantees.
 
 **Constructor Methods:**
 
 ```rust
-fn init_kll(k: i32) -> Self  // k controls accuracy (higher = more accurate)
+fn default() -> Self                    // k=200 (default accuracy)
+fn init_kll(k: i32) -> Self             // k controls accuracy (higher = more accurate)
 ```
 
-**Insert/Query Methods:**
+**Insert Methods:**
 
 ```rust
-fn update(&mut self, x: f64)                   // Insert value
-fn quantile(&self, x: f64) -> f64              // Quantile for value x
-fn rank(&self, x: f64) -> usize                // Rank of value x
-fn count(&self) -> usize                       // Total items
-fn cdf(&self) -> CDF                           // Full CDF
+fn update(&mut self, val: &SketchInput) -> Result<(), &'static str>  // Insert numeric value
+```
+
+**Query Methods:**
+
+```rust
+fn quantile(&self, q: f64) -> f64       // Value at quantile q in [0,1]
+fn rank(&self, x: f64) -> usize         // Rank of value x
+fn count(&self) -> usize                // Total items processed
+fn cdf(&self) -> Cdf                    // Full cumulative distribution
 ```
 
 **CDF Methods:**
 
+The `Cdf` structure provides additional query capabilities:
+
 ```rust
-fn quantile(&self, x: f64) -> f64      // Fraction ≤ x
+fn quantile(&self, x: f64) -> f64       // Fraction of values ≤ x
 fn query(&self, p: f64) -> f64          // Value at quantile p
-fn quantile_li(&self, x: f64) -> f64    // Linear interpolation
-fn query_li(&self, p: f64) -> f64       // Linear interpolation
+fn quantile_li(&self, x: f64) -> f64    // Quantile with linear interpolation
+fn query_li(&self, p: f64) -> f64       // Value with linear interpolation
 ```
 
 **Merge Methods:**
 
 ```rust
-fn merge(&mut self, other: &KLL)
+fn merge(&mut self, other: &KLL)        // Merge another KLL sketch
+```
+
+**Serialization:**
+
+```rust
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```
 
 ---
 
-## Sampling
+### DDSketch
 
-### UniformSampling ⚠️ LEGACY
+**File:** [src/sketches/ddsketch.rs](../src/sketches/ddsketch.rs)
 
-**File:** [src/sketches/uniform.rs](../src/sketches/uniform.rs)
+DDSketch provides approximate quantiles with **relative error guarantees** (as opposed to KLL's rank error). It uses logarithmically-spaced buckets for efficient storage.
 
-Maintains a uniform random sample from a stream using reservoir sampling.
+**Key Characteristics:**
+
+- **Error Type:** Relative error on quantile values
+- **Accuracy:** Configurable via `alpha` parameter (e.g., 0.01 = 1% relative error)
+- **Mergeable:** Yes
+- **Input Type:** Positive `f64` values only
 
 **Constructor Methods:**
 
 ```rust
-fn new(sample_rate: f64) -> Self                  // Default seed
-fn with_seed(sample_rate: f64, seed: u64) -> Self // Custom seed
+fn new(alpha: f64) -> Self              // alpha controls relative error (0.0 < alpha < 1.0)
 ```
 
-**Insert/Query Methods:**
+**Insert Methods:**
 
 ```rust
-fn update(&mut self, value: f64)                                    // Insert numeric
-fn update_input(&mut self, value: &SketchInput) -> Result<(), &'static str>  // Insert any numeric
-fn samples(&self) -> Vec<f64>                     // All samples
-fn sample_at(&self, idx: usize) -> Option<f64>    // Sample at index
-fn len(&self) -> usize
-fn total_seen(&self) -> u64                       // Total items seen
+fn add(&mut self, v: f64)               // Insert positive value (non-positive values ignored)
+```
+
+**Query Methods:**
+
+```rust
+fn get_value_at_quantile(&self, q: f64) -> Option<f64>  // Value at quantile q in [0,1]
+fn get_count(&self) -> u64              // Total samples added
+fn min(&self) -> Option<f64>            // Minimum value seen
+fn max(&self) -> Option<f64>            // Maximum value seen
 ```
 
 **Merge Methods:**
 
 ```rust
-fn merge(&mut self, other: &UniformSampling) -> Result<(), &'static str>
+fn merge(&mut self, other: &DDSketch)   // Merge another DDSketch (must have same alpha)
 ```
 
----
-
-## Windowed Sketches
-
-### MicroScope ⚠️ LEGACY (❌ Depracate soon)
-
-**File:** [src/sketches/microscope.rs](../src/sketches/microscope.rs)
-
-Sliding window sketch that tracks frequency over time windows using sub-windows.
-
-**Constructor Methods:**
+**Serialization:**
 
 ```rust
-fn init_microscope(w: usize, t: usize) -> Self  // w: window size, t: sub-windows
-```
-
-**Methods:**
-
-```rust
-fn insert(&mut self, timestamp: u64)
-fn query(&self, timestamp: u64) -> f64          // Frequency at timestamp
-fn delete(&mut self, timestamp: u64)            // Remove from window
-fn merge(&mut self, other: &MicroScope, ts: u64)  // Merge at timestamp
-```
-
----
-
-### ExponentialHistogram ⚠️ LEGACY
-
-**File:** [src/sketch_framework/eh.rs](../src/sketch_framework/eh.rs)
-
-**Note:** This framework can wrap any sketch via the Chapter interface. It is recommended to use it with recommended sketches (CountMin, Count, HyperLogLog).
-
-Maintains exponentially-spaced buckets for sliding window queries over any sketch type.
-
-**Constructor Methods:**
-
-```rust
-fn new(k: usize, window: u64, eh_type: Chapter) -> Self  // k buckets, time window, wrapped sketch
-```
-
-**Methods:**
-
-```rust
-fn update(&mut self, time: u64, val: &SketchInput)                 // Insert at timestamp
-fn query_interval_merge(&self, t1: u64, t2: u64) -> Option<Chapter>  // Query range [t1,t2]
-fn cover(&self, mint: u64, maxt: u64) -> bool      // Check if range covered
-fn update_window(&mut self, window: u64)           // Change window size
-fn volume_count(&self) -> usize                    // Number of volumes
-fn get_memory_info(&self) -> (usize, Vec<usize>)   // Memory statistics
-```
-
----
-
-## Heavy Hitters
-
-### Locher ⚠️ LEGACY
-
-**File:** [src/sketches/locher.rs](../src/sketches/locher.rs)
-
-Sketch for heavy hitter detection using heap-based tracking with median aggregation.
-
-**Constructor Methods:**
-
-```rust
-fn new(r: usize, l: usize, k: usize) -> Self  // r rows, l columns, k heap size
-```
-
-**Methods:**
-
-```rust
-fn insert(&mut self, e: &String, _v: u64)  // Insert flow ID
-fn estimate(&self, e: &str) -> f64         // Frequency estimate (median)
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```
 
 ---
 
 ## Frameworks
 
-### Hydra (Hierarchical Heavy Hitters) ✅ RECOMMENDED
+### Hydra (Hierarchical Heavy Hitters)
 
 **File:** [src/sketch_framework/hydra.rs](../src/sketch_framework/hydra.rs)
 
 Hydra is a sketch framework for multi-dimensional hierarchical queries over subpopulations.
+`MultiHeadHydra` extends this by allowing multiple counter types across named dimensions.
 
 **Constructor Methods:**
 
@@ -446,20 +406,24 @@ fn with_dimensions(r: usize, c: usize, sketch_type: HydraCounter) -> Self  // Cu
 **Methods:**
 
 ```rust
-fn update(&mut self, key: &str, value: &SketchInput)  // key: semicolon-separated (e.g., "US;CA;male")
+fn update(&mut self, key: &str, value: &SketchInput, count: Option<i32>)  // key: semicolon-separated (e.g., "US;CA;male")
 fn query_key(&self, key: Vec<&str>, query: &HydraQuery) -> f64  // Query subpopulation
 fn query_frequency(&self, key: Vec<&str>, value: &SketchInput) -> f64  // Convenience
 fn query_quantile(&self, key: Vec<&str>, threshold: f64) -> f64  // Convenience
+fn merge(&mut self, other: &Hydra) -> Result<(), String>
+fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError>
+fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 ```
 
 **HydraCounter Enum:**
 
 ```rust
 enum HydraCounter {
-    CM(CountMin),
-    HLL(HllDf),
+    CM(CountMin<Vector2D<i32>, FastPath>),
+    HLL(HyperLogLog<DataFusion>),
+    CS(Count<Vector2D<i32>, FastPath>),
     KLL(KLL),
-    // etc.
+    UNIVERSAL(UnivMon),
 }
 ```
 
@@ -469,13 +433,17 @@ enum HydraCounter {
 enum HydraQuery {
     Frequency(SketchInput),
     Quantile(f64),
+    Cdf(f64),
     Cardinality,
+    L1Norm,
+    L2Norm,
+    Entropy,
 }
 ```
 
 ---
 
-### UnivMon (Universal Monitoring) ✅ RECOMMENDED
+### UnivMon (Universal Monitoring)
 
 **File:** [src/sketch_framework/univmon.rs](../src/sketch_framework/univmon.rs)
 
@@ -484,16 +452,14 @@ UnivMon is a sketch framework for computing multiple stream statistics (L1, L2, 
 **Constructor Methods:**
 
 ```rust
-fn init_univmon(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self  // k: heap, r rows, c cols, l layers
-fn new_univmon_pyramid(k: usize, r: usize, c: usize, l: usize, p_idx: i64) -> Self  // Pyramid variant
+fn init_univmon(heap_size: usize, sketch_row: usize, sketch_col: usize, layer_size: usize) -> Self
 ```
 
 **Insert Methods:**
 
 ```rust
-fn update(&mut self, key: &str, value: i64, bottom_layer_num: usize)
-fn update_optimized(&mut self, key: &str, value: i64, bottom_layer_num: usize)
-fn update_pyramid(&mut self, key: &str, value: i64, bottom_layer_num: usize)
+fn insert(&mut self, key: &SketchInput, value: i64)
+fn fast_insert(&mut self, key: &SketchInput, value: i64)
 ```
 
 **Query Methods:**
@@ -509,104 +475,194 @@ fn calc_g_sum<F>(&self, g: F, is_card: bool) -> f64  // Generic aggregation
 **Merge Methods:**
 
 ```rust
-fn merge_with(&mut self, other: &UnivMon)
+fn merge(&mut self, other: &UnivMon)
 ```
 
 ---
 
-### Chapter (Unified Interface) ⚠️ LEGACY (❌ Depracate soon)
+### HashLayer (Hash Reuse)
 
-**File:** [src/sketch_framework/chapter.rs](../src/sketch_framework/chapter.rs)
+**File:** [src/sketch_framework/hashlayer.rs](../src/sketch_framework/hashlayer.rs)
 
-**Note:** Chapter provides a unified interface for all sketches. Prefer using it with recommended sketches (CountMin, Count, HyperLogLog) for optimal performance.
+HashLayer coordinates multiple sketches and reuses hashes across compatible ones.
+It accepts `OrchestratedSketch` values and automatically caches per-domain hashes.
 
-Chapter enum wrapper provides a unified interface across all sketch types for framework usage.
-
-**Variants:**
+**Constructor Methods:**
 
 ```rust
-enum Chapter<'a> {
-    CM(CountMin),
-    COCO(Coco<'a>),
-    CU(CountL2HH),
-    ELASTIC(Elastic),
-    HLL(HllDf),
-    KLL(KLL),
-    UNIFORM(UniformSampling),
+fn default() -> Self
+fn new(sketches: Vec<OrchestratedSketch>) -> Result<Self, &'static str>
+```
+
+**Insert & Query Methods:**
+
+```rust
+fn insert_all(&mut self, val: &SketchInput)
+fn insert_at(&mut self, indices: &[usize], val: &SketchInput)
+fn query_at(&self, index: usize, val: &SketchInput) -> Result<f64, &'static str>
+fn query_all(&self, val: &SketchInput) -> Vec<Result<f64, &'static str>>
+```
+
+---
+
+### Orchestrator (Node Manager)
+
+**File:** [src/sketch_framework/orchestrator/node_orchestrator.rs](../src/sketch_framework/orchestrator/node_orchestrator.rs)
+
+The node orchestrator provides a unified interface across sketches and higher-level
+frameworks (EH/Nitro/HashLayer). It routes inserts and queries via selectors.
+Current status: **in progress / experimental**. Expect API adjustments while the node surface stabilizes.
+Note: `HashLayerNode` query routing is currently placeholder (`TODO`) and may return an error.
+
+**Core Types:**
+
+- `Orchestrator` - node registry + selection
+- `OrchestratorNode` - trait implemented by `SketchNode`, `HashLayerNode`, `EhNode`, `NitroNode`
+- `NodeSelector` - select nodes by index/name/tag/kind
+- `NodeInsert` / `NodeQuery` - typed insert/query payloads
+
+---
+
+### NitroBatch (Batch Sampling)
+
+**File:** [src/sketch_framework/nitro.rs](../src/sketch_framework/nitro.rs)
+
+NitroBatch provides batch-mode geometric sampling and updates a sketch through
+the `NitroTarget` trait (single hash per sampled item).
+
+**NitroTarget Trait:**
+
+```rust
+pub trait NitroTarget {
+    fn rows(&self) -> usize;
+    fn update_row(&mut self, row: usize, hashed: u128, delta: u64);
 }
 ```
 
-**Unified Methods:**
+**Compatibility:**
+
+- `Vector2D<u32>`
+- `CountMin<Vector2D<i32>, FastPath>` (CMS)
+- `Count<Vector2D<i32>, FastPath>`
+
+**Constructor / Methods:**
 
 ```rust
-fn insert(&mut self, val: &SketchInput)                      // Unified insert
-fn merge(&mut self, other: &Chapter) -> Result<(), &'static str>  // Unified merge
-fn query(&self, key: &SketchInput) -> Result<f64, &'static str>  // Unified query
-fn sketch_type(&self) -> &'static str                        // Get type name
+fn init_nitro(rate: f64) -> Self
+fn with_target(rate: f64, sk: S) -> Self
+fn insert(&mut self, data: &[i64])
+fn insert_cached_step(&mut self, data: &[i64])
+fn target(&self) -> &S
+fn target_mut(&mut self) -> &mut S
+fn into_target(self) -> S
 ```
 
 ---
 
 ## Usage Examples
 
-### Basic Frequency Counting
+### Basic Frequency Counting (CMS, RegularPath)
 
 ```rust
-use sketchlib_rust::sketches::countmin::CountMin;
-use sketchlib_rust::common::SketchInput;
+use sketchlib_rust::{CountMin, SketchInput};
 
-let mut cm = CountMin::default();
+let mut cm = CountMin::default(); // Vector2D<i32> + RegularPath
 cm.insert(&SketchInput::U64(12345));
 let freq = cm.estimate(&SketchInput::U64(12345));
+```
+
+### FastPath CMS with Shared Hash
+
+```rust
+use sketchlib_rust::{hash_for_matrix, CountMin, FastPath, SketchInput, Vector2D};
+
+let mut cm = CountMin::<Vector2D<i32>, FastPath>::default();
+let key = SketchInput::U64(12345);
+let hash = hash_for_matrix(cm.rows(), cm.cols(), &key);
+cm.fast_insert_with_hash_value(&hash);
+let freq = cm.fast_estimate_with_hash(&hash);
+```
+
+### NitroBatch with CMS (FastPath)
+
+```rust
+use sketchlib_rust::{CountMin, FastPath, NitroBatch, Vector2D};
+
+let sk = CountMin::<Vector2D<i32>, FastPath>::default();
+let mut nitro = NitroBatch::with_target(0.1, sk);
+let data = vec![10_i64, 20, 30, 40, 50];
+nitro.insert(&data);
+let cm = nitro.into_target();
 ```
 
 ### Cardinality Estimation
 
 ```rust
-use sketchlib_rust::sketches::hll::HllDf;
-use sketchlib_rust::common::SketchInput;
+use sketchlib_rust::{DataFusion, HyperLogLog, SketchInput};
 
-let mut hll = HllDf::new();
+let mut hll = HyperLogLog::<DataFusion>::new();
 hll.insert(&SketchInput::String("item1".to_string()));
 hll.insert(&SketchInput::String("item2".to_string()));
-let cardinality = hll.get_est();
+let cardinality = hll.estimate();
 ```
 
-### Quantile Queries
+### Quantile Queries (KLL)
 
 ```rust
-use sketchlib_rust::sketches::kll::KLL;
+use sketchlib_rust::{KLL, SketchInput};
 
 let mut kll = KLL::init_kll(200);
-kll.update(1.5);
-kll.update(2.7);
-kll.update(3.2);
+kll.update(&SketchInput::F64(1.5)).unwrap();
+kll.update(&SketchInput::F64(2.7)).unwrap();
+kll.update(&SketchInput::F64(3.2)).unwrap();
 let median = kll.cdf().query(0.5);
+```
+
+### Quantile Queries (DDSketch)
+
+```rust
+use sketchlib_rust::DDSketch;
+
+let mut sketch = DDSketch::new(0.01); // 1% relative error
+sketch.add(1.5);
+sketch.add(2.7);
+sketch.add(3.2);
+let median = sketch.get_value_at_quantile(0.5).unwrap();
+let p99 = sketch.get_value_at_quantile(0.99).unwrap();
 ```
 
 ### Hierarchical Queries
 
 ```rust
-use sketchlib_rust::sketch_framework::hydra::{Hydra, HydraQuery};
-use sketchlib_rust::common::SketchInput;
+use sketchlib_rust::{Hydra, SketchInput};
 
 let mut hydra = Hydra::default();
-hydra.update("US;CA;male", &SketchInput::U64(1));
+hydra.update("US;CA;male", &SketchInput::U64(1), None);
 let freq = hydra.query_frequency(vec!["US", "CA"], &SketchInput::U64(1));
 ```
 
-### Sliding Windows
+### Orchestrator + HashLayer (in-progress API)
 
 ```rust
-use sketchlib_rust::sketch_framework::eh::ExponentialHistogram;
-use sketchlib_rust::sketch_framework::chapter::Chapter;
-use sketchlib_rust::sketches::countmin::CountMin;
-use sketchlib_rust::common::SketchInput;
+use sketchlib_rust::{
+    CountMin, FastPath, FreqSketch, HashLayer, HashLayerNode, NodeMeta, NodeQuery, NodeSelector,
+    OrchestratedSketch, Orchestrator, SketchInput, Vector2D,
+};
 
-let cm = Chapter::CM(CountMin::default());
-let mut eh = ExponentialHistogram::new(10, 1000, cm);
-eh.update(100, &SketchInput::U64(42));
-let result = eh.query_interval_merge(50, 150);
+let layer = HashLayer::new(vec![
+    OrchestratedSketch::Freq(FreqSketch::CountMin(
+        CountMin::<Vector2D<i32>, FastPath>::default(),
+    )),
+])
+.expect("hash-reuse compatible sketches");
+
+let node = HashLayerNode::new(layer);
+let mut orchestrator = Orchestrator::new(vec![(Box::new(node), NodeMeta::new("hashlayer"))]);
+
+let key = SketchInput::U64(42);
+orchestrator.insert(NodeSelector::Names(&["hashlayer"]), &key);
+let results = orchestrator.query(NodeSelector::Names(&["hashlayer"]), &NodeQuery::Sketch(&key));
+println!("{results:?}");
 ```
 
 ---
@@ -624,10 +680,10 @@ fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError>
 
 ### Fast Paths
 
-Many sketches provide optimized methods:
+Many sketches provide optimized paths:
 
-- `fast_insert` / `fast_estimate` - Combined hashing operations to reduce hash call
-- Methods with `_with_hash_value` suffix - Accept pre-computed hashes for multi-sketch coordination
+- `FastPath` mode (CountMin/Count) selects single-hash algorithms at the type level
+- Methods with `_with_hash_value` suffix accept pre-computed hashes for multi-sketch coordination
 
 ### SketchInput
 
@@ -635,7 +691,8 @@ All sketches accept the `SketchInput` enum for type-agnostic insertion:
 
 ```rust
 pub enum SketchInput<'a> {
-    I32(i32), I64(i64), U32(u32), U64(u64),
+    I8(i8), I16(i16), I32(i32), I64(i64), I128(i128), ISIZE(isize),
+    U8(u8), U16(u16), U32(u32), U64(u64), U128(u128), USIZE(usize),
     F32(f32), F64(f64), Str(&'a str),
     String(String), Bytes(&'a [u8]),
 }
@@ -645,26 +702,12 @@ pub enum SketchInput<'a> {
 
 ## Summary
 
-**Total Sketches:** 14+ distinct implementations
+**Available Sketches:**
 
-**✅ Recommended (Common Structure):**
-
-- **Frequency:** CountMin ✅, Count ✅, CountL2HH ✅
-- **Cardinality:** HyperLogLog (3 variants) ✅
-- **Frameworks:** Hydra ✅, UnivMon ✅
-
-**⚠️ Legacy Implementations:**
-
-- **Frequency:** Coco ⚠️, Elastic ⚠️
-- **Quantile:** KLL ⚠️
-- **Sampling:** UniformSampling ⚠️
-- **Windowed:** MicroScope ⚠️
-- **Heavy Hitters:** Locher ⚠️
-
-**Utility Frameworks:**
-
-- **ExponentialHistogram** - Sliding window wrapper (use with recommended sketches)
-- **Chapter** - Unified interface (prefer with recommended sketches)
+- **Frequency:** CountMin, Count, CountL2HH
+- **Cardinality:** HyperLogLog (Regular, DataFusion, HIP)
+- **Quantile:** KLL, DDSketch
+- **Frameworks:** Hydra, UnivMon, HashLayer, NitroBatch, Orchestrator
 
 **File Locations:**
 

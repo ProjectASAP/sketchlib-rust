@@ -9,8 +9,8 @@ use crate::{MatrixStorage, compute_median_inline_f64};
 pub const QUICKSTART_ROW_NUM: usize = 5;
 pub const QUICKSTART_COL_NUM: usize = 2048;
 pub const QUICKSTART_SIZE: usize = QUICKSTART_ROW_NUM * QUICKSTART_COL_NUM;
-const QUICKSTART_MASK_BITS: usize = mask_bits(QUICKSTART_COL_NUM);
-const QUICKSTART_MASK: u64 = (1u64 << QUICKSTART_MASK_BITS) - 1;
+pub const DEFAULT_ROW_NUM: usize = 3;
+pub const DEFAULT_COL_NUM: usize = 4096;
 
 /// The greater is P, the smaller the error.
 const HLL_P: usize = 14_usize;
@@ -107,119 +107,145 @@ impl HllBucketList {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct FixedMatrix {
-    pub data: Box<[i32; QUICKSTART_SIZE]>,
-}
-
-impl Default for FixedMatrix {
-    fn default() -> Self {
-        Self {
-            data: Box::new([0_i32; QUICKSTART_SIZE]),
+macro_rules! impl_fixed_matrix {
+    ($name:ident, $counter:ty, $rows:literal, $cols:literal, $hash_ty:ty) => {
+        #[derive(Clone, Debug)]
+        pub struct $name {
+            pub data: Box<[$counter; $rows * $cols]>,
         }
-    }
-}
 
-impl Serialize for FixedMatrix {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serde_big_array::BigArray::serialize(&*self.data, serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for FixedMatrix {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let data: [i32; QUICKSTART_SIZE] = serde_big_array::BigArray::deserialize(deserializer)?;
-        Ok(Self {
-            data: Box::new(data),
-        })
-    }
-}
-
-impl MatrixStorage<i32> for FixedMatrix {
-    type HashValue = u64;
-    #[inline(always)]
-    fn rows(&self) -> usize {
-        QUICKSTART_ROW_NUM
-    }
-
-    #[inline(always)]
-    fn cols(&self) -> usize {
-        QUICKSTART_COL_NUM
-    }
-
-    #[inline(always)]
-    fn update_one_counter<F, V>(&mut self, row: usize, col: usize, op: F, value: V)
-    where
-        F: Fn(&mut i32, V),
-    {
-        let idx = row * QUICKSTART_COL_NUM + col;
-        op(&mut self.data[idx], value);
-    }
-
-    #[inline(always)]
-    fn increment_by_row(&mut self, row: usize, col: usize, value: i32) {
-        let idx = row * QUICKSTART_COL_NUM + col;
-        self.data[idx] += value;
-    }
-
-    #[inline(always)]
-    fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: u64)
-    where
-        F: Fn(&mut i32, &V, usize),
-        V: Clone,
-    {
-        for row in 0..QUICKSTART_ROW_NUM {
-            let hashed = (hashed_val >> (QUICKSTART_MASK_BITS * row)) & QUICKSTART_MASK;
-            let col = (hashed as usize) % QUICKSTART_COL_NUM;
-            let idx = row * QUICKSTART_COL_NUM + col;
-            op(&mut self.data[idx], &value, row);
+        impl $name {
+            const MASK_BITS: usize = mask_bits($cols);
+            const MASK: $hash_ty = ((1 as $hash_ty) << Self::MASK_BITS) - 1;
         }
-    }
 
-    #[inline(always)]
-    fn fast_query_min<F, R>(&self, hashed_val: u64, op: F) -> R
-    where
-        F: Fn(&i32, usize, u64) -> R,
-        R: Ord,
-    {
-        let hashed = hashed_val & QUICKSTART_MASK;
-        let col = (hashed as usize) % QUICKSTART_COL_NUM;
-        let mut min = op(&self.data[col], 0, hashed_val);
-        for row in 1..QUICKSTART_ROW_NUM {
-            let hashed = (hashed_val >> (QUICKSTART_MASK_BITS * row)) & QUICKSTART_MASK;
-            let col = (hashed as usize) % QUICKSTART_COL_NUM;
-            let idx = row * QUICKSTART_COL_NUM + col;
-            let candidate = op(&self.data[idx], row, hashed_val);
-            if candidate < min {
-                min = candidate;
+        impl Default for $name {
+            fn default() -> Self {
+                Self {
+                    data: Box::new([0 as $counter; $rows * $cols]),
+                }
             }
         }
-        min
-    }
 
-    #[inline(always)]
-    fn fast_query_median<F>(&self, hashed_val: u64, op: F) -> f64
-    where
-        F: Fn(&i32, usize, u64) -> f64,
-    {
-        let mut estimates = Vec::with_capacity(QUICKSTART_ROW_NUM);
-        for row in 0..QUICKSTART_ROW_NUM {
-            let hashed = (hashed_val >> (QUICKSTART_MASK_BITS * row)) & QUICKSTART_MASK;
-            let col = (hashed as usize) % QUICKSTART_COL_NUM;
-            let idx = row * QUICKSTART_COL_NUM + col;
-            estimates.push(op(&self.data[idx], row, hashed_val));
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serde_big_array::BigArray::serialize(&*self.data, serializer)
+            }
         }
-        compute_median_inline_f64(&mut estimates)
-    }
 
-    #[inline(always)]
-    fn query_one_counter(&self, row: usize, col: usize) -> i32 {
-        self.data[row * QUICKSTART_COL_NUM + col]
-    }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let data: [$counter; $rows * $cols] =
+                    serde_big_array::BigArray::deserialize(deserializer)?;
+                Ok(Self {
+                    data: Box::new(data),
+                })
+            }
+        }
+
+        impl MatrixStorage for $name {
+            type Counter = $counter;
+            type HashValueType = $hash_ty;
+
+            #[inline(always)]
+            fn rows(&self) -> usize {
+                $rows
+            }
+
+            #[inline(always)]
+            fn cols(&self) -> usize {
+                $cols
+            }
+
+            #[inline(always)]
+            fn update_one_counter<F, V>(&mut self, row: usize, col: usize, op: F, value: V)
+            where
+                F: Fn(&mut Self::Counter, V),
+            {
+                let idx = row * $cols + col;
+                op(&mut self.data[idx], value);
+            }
+
+            #[inline(always)]
+            fn increment_by_row(&mut self, row: usize, col: usize, value: Self::Counter) {
+                let idx = row * $cols + col;
+                self.data[idx] += value;
+            }
+
+            #[inline(always)]
+            fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: &$hash_ty)
+            where
+                F: Fn(&mut Self::Counter, &V, usize),
+                V: Clone,
+            {
+                let hashed_val = *hashed_val;
+                for row in 0..$rows {
+                    let hashed = (hashed_val >> (Self::MASK_BITS * row)) & Self::MASK;
+                    let col = (hashed as usize) % $cols;
+                    let idx = row * $cols + col;
+                    op(&mut self.data[idx], &value, row);
+                }
+            }
+
+            #[inline(always)]
+            fn fast_query_min<F, R>(&self, hashed_val: &$hash_ty, op: F) -> R
+            where
+                F: Fn(&Self::Counter, usize, &$hash_ty) -> R,
+                R: Ord,
+            {
+                let hashed_val = *hashed_val;
+                let hashed = hashed_val & Self::MASK;
+                let col = (hashed as usize) % $cols;
+                let mut min = op(&self.data[col], 0, &hashed_val);
+                for row in 1..$rows {
+                    let hashed = (hashed_val >> (Self::MASK_BITS * row)) & Self::MASK;
+                    let col = (hashed as usize) % $cols;
+                    let idx = row * $cols + col;
+                    let candidate = op(&self.data[idx], row, &hashed_val);
+                    if candidate < min {
+                        min = candidate;
+                    }
+                }
+                min
+            }
+
+            #[inline(always)]
+            fn fast_query_median<F>(&self, hashed_val: &$hash_ty, op: F) -> f64
+            where
+                F: Fn(&Self::Counter, usize, &$hash_ty) -> f64,
+            {
+                let hashed_val = *hashed_val;
+                let mut estimates = Vec::with_capacity($rows);
+                for row in 0..$rows {
+                    let hashed = (hashed_val >> (Self::MASK_BITS * row)) & Self::MASK;
+                    let col = (hashed as usize) % $cols;
+                    let idx = row * $cols + col;
+                    estimates.push(op(&self.data[idx], row, &hashed_val));
+                }
+                compute_median_inline_f64(&mut estimates)
+            }
+
+            #[inline(always)]
+            fn query_one_counter(&self, row: usize, col: usize) -> Self::Counter {
+                self.data[row * $cols + col]
+            }
+        }
+    };
 }
+
+impl_fixed_matrix!(QuickMatrixI32, i32, 5, 2048, u64);
+impl_fixed_matrix!(QuickMatrixI64, i64, 5, 2048, u64);
+impl_fixed_matrix!(QuickMatrixI128, i128, 5, 2048, u64);
+
+impl_fixed_matrix!(DefaultMatrixI32, i32, 3, 4096, u64);
+impl_fixed_matrix!(DefaultMatrixI64, i64, 3, 4096, u64);
+impl_fixed_matrix!(DefaultMatrixI128, i128, 3, 4096, u64);
+
+/// Backward compatibility: FixedMatrix = QuickMatrixI32.
+pub type FixedMatrix = QuickMatrixI32;

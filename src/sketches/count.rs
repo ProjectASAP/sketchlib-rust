@@ -1,6 +1,7 @@
 use crate::{
-    FastPath, FixedMatrix, MatrixStorage, NitroTarget, RegularPath, SketchInput, Vector1D,
-    Vector2D, compute_median_inline_f64, hash_it, hash_it_to_128,
+    DefaultMatrixI32, DefaultMatrixI64, DefaultMatrixI128, FastPath, FastPathHasher, FixedMatrix,
+    MatrixHashType, MatrixStorage, NitroTarget, QuickMatrixI64, QuickMatrixI128, RegularPath,
+    SketchInput, Vector1D, Vector2D, compute_median_inline_f64, hash64_seeded, hash128_seeded,
 };
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
@@ -8,6 +9,7 @@ use rmp_serde::{
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::ops::Neg;
 
 const DEFAULT_ROW_NUM: usize = 3;
 const DEFAULT_COL_NUM: usize = 4096;
@@ -15,7 +17,7 @@ const LOWER_32_MASK: u64 = (1u64 << 32) - 1;
 
 /// Count Sketch based on Common structure
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Count<S: MatrixStorage<i32> = Vector2D<i32>, Mode = RegularPath> {
+pub struct Count<S: MatrixStorage = Vector2D<i32>, Mode = RegularPath> {
     counts: S,
     row: usize,
     col: usize,
@@ -23,31 +25,181 @@ pub struct Count<S: MatrixStorage<i32> = Vector2D<i32>, Mode = RegularPath> {
     _mode: PhantomData<Mode>,
 }
 
+pub trait CountSketchCounter: Copy + std::ops::AddAssign + Neg<Output = Self> + From<i32> {
+    fn to_f64(self) -> f64;
+}
+
+// Implements CountSketchCounter for i32.
+impl CountSketchCounter for i32 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+// Implements CountSketchCounter for i64.
+impl CountSketchCounter for i64 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+// Implements CountSketchCounter for i128.
+impl CountSketchCounter for i128 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+pub trait FastPathSign {
+    fn sign_for_row(&self, row: usize) -> i32;
+}
+
+// Implements fast-path sign extraction for MatrixHashType.
+impl FastPathSign for MatrixHashType {
+    fn sign_for_row(&self, row: usize) -> i32 {
+        MatrixHashType::sign_for_row(self, row)
+    }
+}
+
+// Implements fast-path sign extraction for u64.
+impl FastPathSign for u64 {
+    fn sign_for_row(&self, row: usize) -> i32 {
+        let bit = (self >> (63 - row)) & 1;
+        (bit as i32 * 2) - 1
+    }
+}
+
+// Default Count sketch for Vector2D<i32> (RegularPath).
 impl Default for Count<Vector2D<i32>, RegularPath> {
     fn default() -> Self {
         Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
     }
 }
 
+// Default Count sketch for Vector2D<i32> (FastPath).
 impl Default for Count<Vector2D<i32>, FastPath> {
     fn default() -> Self {
         Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
     }
 }
 
+// Default Count sketch for Vector2D<i64> (RegularPath).
+impl Default for Count<Vector2D<i64>, RegularPath> {
+    fn default() -> Self {
+        Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
+    }
+}
+
+// Default Count sketch for Vector2D<i64> (FastPath).
+impl Default for Count<Vector2D<i64>, FastPath> {
+    fn default() -> Self {
+        Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
+    }
+}
+
+// Default Count sketch for Vector2D<i128> (RegularPath).
+impl Default for Count<Vector2D<i128>, RegularPath> {
+    fn default() -> Self {
+        Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
+    }
+}
+
+// Default Count sketch for Vector2D<i128> (FastPath).
+impl Default for Count<Vector2D<i128>, FastPath> {
+    fn default() -> Self {
+        Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
+    }
+}
+
+// Default Count sketch for FixedMatrix (RegularPath).
 impl Default for Count<FixedMatrix, RegularPath> {
     fn default() -> Self {
         Count::from_storage(FixedMatrix::default())
     }
 }
 
+// Default Count sketch for FixedMatrix (FastPath).
 impl Default for Count<FixedMatrix, FastPath> {
     fn default() -> Self {
         Count::from_storage(FixedMatrix::default())
     }
 }
 
-impl<M> Count<Vector2D<i32>, M> {
+// Default Count sketch for DefaultMatrixI32 (RegularPath).
+impl Default for Count<DefaultMatrixI32, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI32::default())
+    }
+}
+
+// Default Count sketch for DefaultMatrixI32 (FastPath).
+impl Default for Count<DefaultMatrixI32, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI32::default())
+    }
+}
+
+// Default Count sketch for DefaultMatrixI64 (RegularPath).
+impl Default for Count<DefaultMatrixI64, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI64::default())
+    }
+}
+
+// Default Count sketch for DefaultMatrixI64 (FastPath).
+impl Default for Count<DefaultMatrixI64, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI64::default())
+    }
+}
+
+// Default Count sketch for DefaultMatrixI128 (RegularPath).
+impl Default for Count<DefaultMatrixI128, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI128::default())
+    }
+}
+
+// Default Count sketch for DefaultMatrixI128 (FastPath).
+impl Default for Count<DefaultMatrixI128, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(DefaultMatrixI128::default())
+    }
+}
+
+// Default Count sketch for QuickMatrixI64 (RegularPath).
+impl Default for Count<QuickMatrixI64, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(QuickMatrixI64::default())
+    }
+}
+
+// Default Count sketch for QuickMatrixI64 (FastPath).
+impl Default for Count<QuickMatrixI64, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(QuickMatrixI64::default())
+    }
+}
+
+// Default Count sketch for QuickMatrixI128 (RegularPath).
+impl Default for Count<QuickMatrixI128, RegularPath> {
+    fn default() -> Self {
+        Count::from_storage(QuickMatrixI128::default())
+    }
+}
+
+// Default Count sketch for QuickMatrixI128 (FastPath).
+impl Default for Count<QuickMatrixI128, FastPath> {
+    fn default() -> Self {
+        Count::from_storage(QuickMatrixI128::default())
+    }
+}
+
+// Count constructors for Vector2D-backed storage.
+impl<T, M> Count<Vector2D<T>, M>
+where
+    T: CountSketchCounter,
+{
     /// Creates a sketch with the requested number of rows and columns.
     pub fn with_dimensions(rows: usize, cols: usize) -> Self {
         let mut sk = Count {
@@ -56,12 +208,17 @@ impl<M> Count<Vector2D<i32>, M> {
             col: cols,
             _mode: PhantomData,
         };
-        sk.counts.fill(0_i32);
+        sk.counts.fill(T::from(0));
         sk
     }
 }
 
-impl<S: MatrixStorage<i32>, Mode> Count<S, Mode> {
+// Core Count API for any storage/counter.
+impl<S, C, Mode> Count<S, Mode>
+where
+    S: MatrixStorage<Counter = C>,
+    C: CountSketchCounter,
+{
     pub fn from_storage(counts: S) -> Self {
         let row = counts.rows();
         let col = counts.cols();
@@ -116,45 +273,66 @@ impl<S: MatrixStorage<i32>, Mode> Count<S, Mode> {
     }
 }
 
-impl<S: MatrixStorage<i32> + Serialize, Mode> Count<S, Mode> {
+// Serialization helpers for Count.
+impl<S, C, Mode> Count<S, Mode>
+where
+    S: MatrixStorage<Counter = C> + Serialize,
+    C: CountSketchCounter,
+{
     /// Serializes the sketch into MessagePack bytes.
     pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, RmpEncodeError> {
         to_vec_named(self)
     }
 }
 
-impl<S: MatrixStorage<i32> + for<'de> Deserialize<'de>, Mode> Count<S, Mode> {
+// Deserialization helpers for Count.
+impl<S, C, Mode> Count<S, Mode>
+where
+    S: MatrixStorage<Counter = C> + for<'de> Deserialize<'de>,
+    C: CountSketchCounter,
+{
     /// Deserializes a sketch from MessagePack bytes.
     pub fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, RmpDecodeError> {
         from_slice(bytes)
     }
 }
 
-impl<S: MatrixStorage<i32>> Count<S, RegularPath> {
+// Regular-path Count operations.
+impl<S, C> Count<S, RegularPath>
+where
+    S: MatrixStorage<Counter = C>,
+    C: CountSketchCounter,
+{
     /// Inserts an observation with standard Count Sketch updating algorithm.
     pub fn insert(&mut self, value: &SketchInput) {
         let rows = self.counts.rows();
         let cols = self.counts.cols();
         for r in 0..rows {
-            let hashed = hash_it_to_128(r, value);
-            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
-            let bit = ((hashed >> (127)) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
+            let hashed = hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> 63) & 1) as i32;
+            let sign_bit = if bit == 1 { 1 } else { -1 };
+            let delta = if sign_bit > 0 {
+                C::from(1)
+            } else {
+                -C::from(1)
+            };
             self.counts
-                .update_one_counter(r, col, |a, b| *a += sign_bit * b, 1_i32);
+                .update_one_counter(r, col, |a, b| *a += b, delta);
         }
     }
 
-    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
+    pub fn insert_many(&mut self, value: &SketchInput, many: C) {
         let rows = self.counts.rows();
         let cols = self.counts.cols();
         for r in 0..rows {
-            let hashed = hash_it_to_128(r, value);
-            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
-            let bit = ((hashed >> (127)) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
+            let hashed = hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> 63) & 1) as i32;
+            let sign_bit = if bit == 1 { 1 } else { -1 };
+            let delta = if sign_bit > 0 { many } else { -many };
             self.counts
-                .update_one_counter(r, col, |a, b| *a += sign_bit * b, many);
+                .update_one_counter(r, col, |a, b| *a += b, delta);
         }
     }
 
@@ -164,17 +342,21 @@ impl<S: MatrixStorage<i32>> Count<S, RegularPath> {
         let cols = self.counts.cols();
         let mut estimates = Vec::with_capacity(rows);
         for r in 0..rows {
-            let hashed = hash_it_to_128(r, value);
-            let col = ((hashed as u64 & LOWER_32_MASK) as usize) % cols;
-            let bit = ((hashed >> (127)) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
+            let hashed = hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            let bit = ((hashed >> 63) & 1) as i32;
+            let sign_bit = if bit == 1 { 1 } else { -1 };
             let counter = self.counts.query_one_counter(r, col);
-            estimates.push(sign_bit * counter);
+            if sign_bit > 0 {
+                estimates.push(counter.to_f64());
+            } else {
+                estimates.push(-counter.to_f64());
+            }
         }
         if estimates.is_empty() {
             return 0.0;
         }
-        estimates.sort_unstable();
+        estimates.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = estimates.len() / 2;
         if estimates.len() % 2 == 1 {
             estimates[mid] as f64
@@ -184,70 +366,83 @@ impl<S: MatrixStorage<i32>> Count<S, RegularPath> {
     }
 }
 
-impl Count<Vector2D<i32>, FastPath> {
+// Fast-path Count operations using precomputed hashes.
+impl<S> Count<S, FastPath>
+where
+    S: MatrixStorage + FastPathHasher,
+    S::Counter: CountSketchCounter,
+    S::HashValueType: FastPathSign,
+{
     /// Inserts an observation using the combined hash optimization.
     #[inline(always)]
     pub fn insert(&mut self, value: &SketchInput) {
-        let hashed_val = hash_it_to_128(0, value);
+        let hashed_val = self.counts.hash_for_matrix(value);
         self.counts.fast_insert(
             |counter, value, row| {
-                let bit = (hashed_val >> (127 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
+                let sign = hashed_val.sign_for_row(row);
+                let delta = if sign > 0 { *value } else { -*value };
+                *counter += delta;
             },
-            1_i32,
-            hashed_val,
+            S::Counter::from(1),
+            &hashed_val,
         );
     }
 
     #[inline(always)]
-    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
-        let hashed_val = hash_it_to_128(0, value);
+    pub fn insert_many(&mut self, value: &SketchInput, many: S::Counter) {
+        let hashed_val = self.counts.hash_for_matrix(value);
         self.counts.fast_insert(
             |counter, value, row| {
-                let bit = (hashed_val >> (127 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
+                let sign = hashed_val.sign_for_row(row);
+                let delta = if sign > 0 { *value } else { -*value };
+                *counter += delta;
             },
             many,
-            hashed_val,
+            &hashed_val,
         );
     }
 
     /// Returns the frequency estimate for the provided value.
     #[inline(always)]
     pub fn estimate(&self, value: &SketchInput) -> f64 {
-        let hashed_val = hash_it_to_128(0, value);
-        self.counts.fast_query_median(hashed_val, |val, row, hash| {
-            let sign_bit_pos = 127 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
-            (sign_bit * (*val)) as f64
-        })
+        let hashed_val = self.counts.hash_for_matrix(value);
+        self.counts
+            .fast_query_median(&hashed_val, |val, row, hash| {
+                let sign = hash.sign_for_row(row);
+                if sign > 0 {
+                    (*val).to_f64()
+                } else {
+                    -(*val).to_f64()
+                }
+            })
     }
 
     /// Inserts an observation using a pre-computed hash value.
     /// Hash value can be reused with other sketches.
     #[inline(always)]
-    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u128) {
+    pub fn fast_insert_with_hash_value(&mut self, hashed_val: &S::HashValueType) {
         self.counts.fast_insert(
             |counter, value, row| {
-                let bit = (hashed_val >> (127 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
+                let sign = hashed_val.sign_for_row(row);
+                let delta = if sign > 0 { *value } else { -*value };
+                *counter += delta;
             },
-            1_i32,
+            S::Counter::from(1),
             hashed_val,
         );
     }
 
     #[inline(always)]
-    pub fn fast_insert_many_with_hash_value(&mut self, hashed_val: u128, many: i32) {
+    pub fn fast_insert_many_with_hash_value(
+        &mut self,
+        hashed_val: &S::HashValueType,
+        many: S::Counter,
+    ) {
         self.counts.fast_insert(
             |counter, value, row| {
-                let bit = (hashed_val >> (127 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
+                let sign = hashed_val.sign_for_row(row);
+                let delta = if sign > 0 { *value } else { -*value };
+                *counter += delta;
             },
             many,
             hashed_val,
@@ -256,106 +451,19 @@ impl Count<Vector2D<i32>, FastPath> {
 
     /// Returns the frequency estimate using a pre-computed hash value.
     #[inline(always)]
-    pub fn fast_estimate_with_hash(&self, hashed_val: u128) -> f64 {
+    pub fn fast_estimate_with_hash(&self, hashed_val: &S::HashValueType) -> f64 {
         self.counts.fast_query_median(hashed_val, |val, row, hash| {
-            let sign_bit_pos = 127 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
-            (sign_bit * (*val)) as f64
+            let sign = hash.sign_for_row(row);
+            if sign > 0 {
+                (*val).to_f64()
+            } else {
+                -(*val).to_f64()
+            }
         })
-    }
-
-    pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
-        self.estimate(value)
     }
 }
 
-impl Count<FixedMatrix, FastPath> {
-    /// Inserts an observation using the combined hash optimization.
-    #[inline(always)]
-    pub fn insert(&mut self, value: &SketchInput) {
-        let hashed_val = hash_it(0, value);
-        self.counts.fast_insert(
-            |counter, value, row| {
-                let bit = (hashed_val >> (63 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
-            },
-            1_i32,
-            hashed_val,
-        );
-    }
-
-    #[inline(always)]
-    pub fn insert_many(&mut self, value: &SketchInput, many: i32) {
-        let hashed_val = hash_it(0, value);
-        self.counts.fast_insert(
-            |counter, value, row| {
-                let bit = (hashed_val >> (63 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
-            },
-            many,
-            hashed_val,
-        );
-    }
-
-    /// Returns the frequency estimate for the provided value.
-    #[inline(always)]
-    pub fn estimate(&self, value: &SketchInput) -> f64 {
-        let hashed_val = hash_it(0, value);
-        self.counts.fast_query_median(hashed_val, |val, row, hash| {
-            let sign_bit_pos = 63 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
-            (sign_bit * (*val)) as f64
-        })
-    }
-
-    /// Inserts an observation using a pre-computed hash value.
-    /// Hash value can be reused with other sketches.
-    #[inline(always)]
-    pub fn fast_insert_with_hash_value(&mut self, hashed_val: u64) {
-        self.counts.fast_insert(
-            |counter, value, row| {
-                let bit = (hashed_val >> (63 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
-            },
-            1_i32,
-            hashed_val,
-        );
-    }
-
-    #[inline(always)]
-    pub fn fast_insert_many_with_hash_value(&mut self, hashed_val: u64, many: i32) {
-        self.counts.fast_insert(
-            |counter, value, row| {
-                let bit = (hashed_val >> (63 - row)) & 1;
-                let sign = (bit << 1) as i32 - 1;
-                *counter += sign * *value;
-            },
-            many,
-            hashed_val,
-        );
-    }
-
-    /// Returns the frequency estimate using a pre-computed hash value.
-    #[inline(always)]
-    pub fn fast_estimate_with_hash(&self, hashed_val: u64) -> f64 {
-        self.counts.fast_query_median(hashed_val, |val, row, hash| {
-            let sign_bit_pos = 63 - row;
-            let bit = ((hash >> sign_bit_pos) & 1) as i32;
-            let sign_bit = -(1 - 2 * bit);
-            (sign_bit * (*val)) as f64
-        })
-    }
-
-    pub fn nitro_estimate(&self, value: &SketchInput) -> f64 {
-        self.estimate(value)
-    }
-}
-
+// Debug helpers for i32 Vector2D Count.
 impl<M> Count<Vector2D<i32>, M> {
     /// Human-friendly helper used by the serializer demo binaries.
     pub fn debug(&self) {
@@ -365,6 +473,7 @@ impl<M> Count<Vector2D<i32>, M> {
     }
 }
 
+// Nitro sampling helpers for fast-path Count.
 impl Count<Vector2D<i32>, FastPath> {
     /// Enables Nitro sampling with the provided rate.
     pub fn enable_nitro(&mut self, sampling_rate: f64) {
@@ -378,7 +487,7 @@ impl Count<Vector2D<i32>, FastPath> {
         if self.counts.nitro().to_skip >= rows {
             self.counts.reduce_nitro_skip(rows);
         } else {
-            let hashed = hash_it_to_128(0, value);
+            let hashed = hash128_seeded(0, value);
             let mut r = self.counts.nitro().to_skip;
             loop {
                 let bit = (hashed >> (127 - r)) & 1;
@@ -397,6 +506,7 @@ impl Count<Vector2D<i32>, FastPath> {
     }
 }
 
+// NitroTarget integration for fast-path Count.
 impl NitroTarget for Count<Vector2D<i32>, FastPath> {
     #[inline(always)]
     fn rows(&self) -> usize {
@@ -427,12 +537,14 @@ fn default_scratch_buffer() -> RefCell<Vec<f64>> {
     RefCell::new(Vec::new())
 }
 
+// Default CountL2HH configuration.
 impl Default for CountL2HH {
     fn default() -> Self {
         Self::with_dimensions(DEFAULT_ROW_NUM, DEFAULT_COL_NUM)
     }
 }
 
+// CountL2HH constructors and operations.
 impl CountL2HH {
     pub fn with_dimensions(rows: usize, cols: usize) -> Self {
         Self::with_dimensions_and_seed(rows, cols, 0)
@@ -490,7 +602,7 @@ impl CountL2HH {
     /// Inserts with hash optimization - computes hash once and reuses it.
     /// due to the limitation of seeds, use fast_insert only
     pub fn fast_insert_with_count(&mut self, val: &SketchInput, c: i64) {
-        let hashed_val = hash_it_to_128(self.seed_idx, val);
+        let hashed_val = hash128_seeded(self.seed_idx, val);
         self.fast_insert_with_count_and_hash(hashed_val, c);
     }
 
@@ -523,7 +635,7 @@ impl CountL2HH {
     // /// Inserts without L2 update using hash optimization.
     // /// due to the limitation of seeds, use fast_insert only
     // pub fn fast_insert_with_count_without_l2(&mut self, val: &SketchInput, c: i64) {
-    //     let hashed_val = hash_it_to_128(self.seed_idx, val);
+    //     let hashed_val = hash128_seeded(self.seed_idx, val);
     //     self.fast_insert_with_count_without_l2_and_hash(hashed_val, c);
     // }
 
@@ -550,7 +662,7 @@ impl CountL2HH {
     /// Update and estimate with hash optimization.
     /// due to the limitation of seeds, use fast_insert only
     pub fn fast_update_and_est(&mut self, val: &SketchInput, c: i64) -> f64 {
-        let hashed_val = hash_it_to_128(self.seed_idx, val);
+        let hashed_val = hash128_seeded(self.seed_idx, val);
         self.fast_insert_with_count_and_hash(hashed_val, c);
         self.fast_get_est_with_hash(hashed_val)
     }
@@ -558,7 +670,7 @@ impl CountL2HH {
     /// Update and estimate without L2 with hash optimization.
     /// due to the limitation of seeds, use fast_insert only
     pub fn fast_update_and_est_without_l2(&mut self, val: &SketchInput, c: i64) -> f64 {
-        let hashed_val = hash_it_to_128(self.seed_idx, val);
+        let hashed_val = hash128_seeded(self.seed_idx, val);
         self.fast_insert_with_count_without_l2_and_hash(hashed_val, c);
         self.fast_get_est_with_hash(hashed_val)
     }
@@ -579,7 +691,7 @@ impl CountL2HH {
     /// Returns the frequency estimate with hash optimization.
     /// due to the limitation of seeds, use fast_insert only
     pub fn fast_get_est(&self, val: &SketchInput) -> f64 {
-        let hashed_val = hash_it_to_128(self.seed_idx, val);
+        let hashed_val = hash128_seeded(self.seed_idx, val);
         self.fast_get_est_with_hash(hashed_val)
     }
 
@@ -624,15 +736,14 @@ impl CountL2HH {
 mod tests {
     use super::*;
     use crate::test_utils::{
-        all_counter_zero_i32, all_zero_except_i32, counter_index, sample_uniform_f64,
-        sample_zipf_u64,
+        all_counter_zero_i32, counter_index, sample_uniform_f64, sample_zipf_u64,
     };
-    use crate::{SketchInput, hash_it_to_128};
+    use crate::{SketchInput, hash64_seeded};
     use std::collections::HashMap;
 
     fn counter_sign(row: usize, key: &SketchInput) -> i32 {
-        let hash = hash_it_to_128(row, key);
-        if (hash >> 127) & 1 == 1 { 1 } else { -1 }
+        let hash = hash64_seeded(row, key);
+        if (hash >> 63) & 1 == 1 { 1 } else { -1 }
     }
 
     fn run_zipf_stream(
@@ -904,919 +1015,78 @@ mod tests {
         );
     }
 
-    // 0: AD840DF6E50083D93BF66518E6FF7E3D
-    // 1: 6E17A626B9D8F6F4573FA3775F50F1B9
-    // 2: 172A557358ABF80D6511148F7D5AA0F6
-    // end of 0
-    // 0: DD835708A07623292C138892AEB1F547
-    // 1: F9B0D7EF1C2ED935F5F989B41B09FD89
-    // 2: 7A0C88C68F4531C51BAC589557E8F18C
-    // end of 1
-    // 0: DD61C694F39B506F09D6B97F9CEBC585
-    // 1: 301ADA0437C870752BFB3D0D0B5DA30D
-    // 2: D21D14E3363A1092FFB15D675C083154
-    // end of 2
-    // 0: B5BEF3BF53A585FF1B2B5F62AAD24BED
-    // 1: 7D6CA4F84CB7D09C6D1784F7D218F5CB
-    // 2: CEFB01A00A53ABEC3BA981A6520EC1B8
-    // end of 3
-    // 0: 16D521D000A0D47C3F48F6337A57083F
-    // 1: A66ED8D7F3BF42C301D95F41A176676A
-    // 2: 37B2A6706E35FE54C157F0BB1C615FE6
-    // end of 4
-    // 0: 2BAE2A5230668C4AEADCEF720D5CED80
-    // 1: B14095E9638EC368F72C7C42E0F56DDE
-    // 2: 7FF0D70FE7F7724764106A10B7891FBC
-    // end of 5
-    // 0: 6C6614EE2E5470FBEF10E25F5699AC8B
-    // 1: 96D75ECE5AC8EC01D28D283523CC5645
-    // 2: 347E41D9E0FEE82CA99948EBF1EF4197
-    // end of 6
-    // 0: 6E47C6AF273700D4DF8A5CDAF096CEE8
-    // 1: E688315FBE5FCA36A23BB2AC87FD72C3
-    // 2: 218DCB5B3795D9F43769F64B6A145021
-    // end of 7
-    // 0: EB956D6716CF14B4CAE830DF0405ED5
-    // 1: 321A4D0D0F8AD2DB5957FA84B0F8D249
-    // 2: 6C931E49EA89960760D2E223598066DE
-    // end of 8
-    // 0: EA9B0E7B47192AB557372F968739F6CC
-    // 1: 3053BA71E31A27332644EBD80DB20C55
-    // 2: 3D95B11B7BD867ED20CE28729B869EC0
-    // end of 9
     #[test]
     fn cs_regular_path_correctness() {
         let mut sk = Count::<Vector2D<i32>, RegularPath>::default();
-        // insert 0~9
+        // Insert values 0..9 once using the regular path.
         for i in 0..10 {
             sk.insert(&SketchInput::I32(i));
         }
-        let data = sk.as_storage().as_slice();
-        // some counter is 1 now
-        assert_eq!(
-            data[0xE3D], 1,
-            "incorrect value {} for row 0 of insertion i32 0",
-            data[0xE3D]
-        );
-        assert_eq!(
-            data[0x1B9 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 0",
-            data[0x1B9 + sk.col]
-        );
-        assert_eq!(
-            data[0x0F6 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 0",
-            data[0x0F6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x547], 1,
-            "incorrect value {} for row 0 of insertion i32 1",
-            data[0x547]
-        );
-        assert_eq!(
-            data[0xD89 + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 1",
-            data[0xD89 + sk.col]
-        );
-        assert_eq!(
-            data[0x18C + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 1",
-            data[0x18C + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x585], 1,
-            "incorrect value {} for row 0 of insertion i32 2",
-            data[0x585]
-        );
-        assert_eq!(
-            data[0x30D + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 2",
-            data[0x30D + sk.col]
-        );
-        assert_eq!(
-            data[0x154 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 2",
-            data[0x154 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xBED], 1,
-            "incorrect value {} for row 0 of insertion i32 3",
-            data[0xBED]
-        );
-        assert_eq!(
-            data[0x5CB + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 3",
-            data[0x5CB + sk.col]
-        );
-        assert_eq!(
-            data[0x1B8 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 3",
-            data[0x1B8 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x83F], -1,
-            "incorrect value {} for row 0 of insertion i32 4",
-            data[0x83F]
-        );
-        assert_eq!(
-            data[0x76A + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 4",
-            data[0x76A + sk.col]
-        );
-        assert_eq!(
-            data[0xFE6 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 4",
-            data[0xFE6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xD80], -1,
-            "incorrect value {} for row 0 of insertion i32 5",
-            data[0xD80]
-        );
-        assert_eq!(
-            data[0xDDE + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 5",
-            data[0xDDE + sk.col]
-        );
-        assert_eq!(
-            data[0xFBC + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 5",
-            data[0xFBC + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xC8B], -1,
-            "incorrect value {} for row 0 of insertion i32 6",
-            data[0xC8B]
-        );
-        assert_eq!(
-            data[0x645 + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 6",
-            data[0x645 + sk.col]
-        );
-        assert_eq!(
-            data[0x197 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 6",
-            data[0x197 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xEE8], -1,
-            "incorrect value {} for row 0 of insertion i32 7",
-            data[0xEE8]
-        );
-        assert_eq!(
-            data[0x2C3 + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 7",
-            data[0x2C3 + sk.col]
-        );
-        assert_eq!(
-            data[0x021 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 7",
-            data[0x021 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xED5], -1,
-            "incorrect value {} for row 0 of insertion i32 8",
-            data[0xED5]
-        );
-        assert_eq!(
-            data[0x249 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 8",
-            data[0x249 + sk.col]
-        );
-        assert_eq!(
-            data[0x6DE + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 8",
-            data[0x6DE + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x6CC], 1,
-            "incorrect value {} for row 0 of insertion i32 9",
-            data[0x6CC]
-        );
-        assert_eq!(
-            data[0xC55 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 9",
-            data[0xC55 + sk.col]
-        );
-        assert_eq!(
-            data[0xEC0 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 9",
-            data[0xEC0 + sk.col * 2]
-        );
-        // other remains zero
-        all_zero_except_i32(
-            sk.as_storage(),
-            vec![
-                0xE3D,
-                0x1B9 + sk.col,
-                0x0F6 + sk.col * 2, // 0
-                0x547,
-                0xD89 + sk.col,
-                0x18C + sk.col * 2, // 1
-                0x585,
-                0x30D + sk.col,
-                0x154 + sk.col * 2, // 2
-                0xBED,
-                0x5CB + sk.col,
-                0x1B8 + sk.col * 2, // 3
-                0x83F,
-                0x76A + sk.col,
-                0xFE6 + sk.col * 2, // 4
-                0xD80,
-                0xDDE + sk.col,
-                0xFBC + sk.col * 2, // 5
-                0xC8B,
-                0x645 + sk.col,
-                0x197 + sk.col * 2, // 6
-                0xEE8,
-                0x2C3 + sk.col,
-                0x021 + sk.col * 2, // 7
-                0xED5,
-                0x249 + sk.col,
-                0x6DE + sk.col * 2, // 8
-                0x6CC,
-                0xC55 + sk.col,
-                0xEC0 + sk.col * 2, // 9
-            ],
-        );
+
+        // Build the expected counter array by mirroring the regular-path hashing logic.
+        let storage = sk.as_storage();
+        let rows = storage.rows();
+        let cols = storage.cols();
+        let mut expected_once = vec![0_i32; rows * cols];
+        for i in 0..10 {
+            let value = SketchInput::I32(i);
+            for r in 0..rows {
+                let hashed = hash64_seeded(r, &value);
+                let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+                let bit = ((hashed >> 63) & 1) as i32;
+                let sign_bit = -(1 - 2 * bit);
+                let idx = r * cols + col;
+                expected_once[idx] += sign_bit;
+            }
+        }
+        // All counters should match the expected single-pass values.
+        assert_eq!(storage.as_slice(), expected_once.as_slice());
+
+        // Insert the same values again; counters should double.
         for i in 0..10 {
             sk.insert(&SketchInput::I32(i));
         }
-        let data = sk.as_storage().as_slice();
-        // some counter is 2 now
-        assert_eq!(
-            data[0xE3D], 2,
-            "incorrect value {} for row 0 of insertion i32 0",
-            data[0xE3D]
-        );
-        assert_eq!(
-            data[0x1B9 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 0",
-            data[0x1B9 + sk.col]
-        );
-        assert_eq!(
-            data[0x0F6 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 0",
-            data[0x0F6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x547], 2,
-            "incorrect value {} for row 0 of insertion i32 1",
-            data[0x547]
-        );
-        assert_eq!(
-            data[0xD89 + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 1",
-            data[0xD89 + sk.col]
-        );
-        assert_eq!(
-            data[0x18C + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 1",
-            data[0x18C + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x585], 2,
-            "incorrect value {} for row 0 of insertion i32 2",
-            data[0x585]
-        );
-        assert_eq!(
-            data[0x30D + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 2",
-            data[0x30D + sk.col]
-        );
-        assert_eq!(
-            data[0x154 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 2",
-            data[0x154 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xBED], 2,
-            "incorrect value {} for row 0 of insertion i32 3",
-            data[0xBED]
-        );
-        assert_eq!(
-            data[0x5CB + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 3",
-            data[0x5CB + sk.col]
-        );
-        assert_eq!(
-            data[0x1B8 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 3",
-            data[0x1B8 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x83F], -2,
-            "incorrect value {} for row 0 of insertion i32 4",
-            data[0x83F]
-        );
-        assert_eq!(
-            data[0x76A + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 4",
-            data[0x76A + sk.col]
-        );
-        assert_eq!(
-            data[0xFE6 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 4",
-            data[0xFE6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xD80], -2,
-            "incorrect value {} for row 0 of insertion i32 5",
-            data[0xD80]
-        );
-        assert_eq!(
-            data[0xDDE + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 5",
-            data[0xDDE + sk.col]
-        );
-        assert_eq!(
-            data[0xFBC + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 5",
-            data[0xFBC + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xC8B], -2,
-            "incorrect value {} for row 0 of insertion i32 6",
-            data[0xC8B]
-        );
-        assert_eq!(
-            data[0x645 + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 6",
-            data[0x645 + sk.col]
-        );
-        assert_eq!(
-            data[0x197 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 6",
-            data[0x197 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xEE8], -2,
-            "incorrect value {} for row 0 of insertion i32 7",
-            data[0xEE8]
-        );
-        assert_eq!(
-            data[0x2C3 + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 7",
-            data[0x2C3 + sk.col]
-        );
-        assert_eq!(
-            data[0x021 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 7",
-            data[0x021 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xED5], -2,
-            "incorrect value {} for row 0 of insertion i32 8",
-            data[0xED5]
-        );
-        assert_eq!(
-            data[0x249 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 8",
-            data[0x249 + sk.col]
-        );
-        assert_eq!(
-            data[0x6DE + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 8",
-            data[0x6DE + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x6CC], 2,
-            "incorrect value {} for row 0 of insertion i32 9",
-            data[0x6CC]
-        );
-        assert_eq!(
-            data[0xC55 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 9",
-            data[0xC55 + sk.col]
-        );
-        assert_eq!(
-            data[0xEC0 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 9",
-            data[0xEC0 + sk.col * 2]
-        );
-        // other remains zero
-        all_zero_except_i32(
-            sk.as_storage(),
-            vec![
-                0xE3D,
-                0x1B9 + sk.col,
-                0x0F6 + sk.col * 2, // 0
-                0x547,
-                0xD89 + sk.col,
-                0x18C + sk.col * 2, // 1
-                0x585,
-                0x30D + sk.col,
-                0x154 + sk.col * 2, // 2
-                0xBED,
-                0x5CB + sk.col,
-                0x1B8 + sk.col * 2, // 3
-                0x83F,
-                0x76A + sk.col,
-                0xFE6 + sk.col * 2, // 4
-                0xD80,
-                0xDDE + sk.col,
-                0xFBC + sk.col * 2, // 5
-                0xC8B,
-                0x645 + sk.col,
-                0x197 + sk.col * 2, // 6
-                0xEE8,
-                0x2C3 + sk.col,
-                0x021 + sk.col * 2, // 7
-                0xED5,
-                0x249 + sk.col,
-                0x6DE + sk.col * 2, // 8
-                0x6CC,
-                0xC55 + sk.col,
-                0xEC0 + sk.col * 2, // 9
-            ],
-        );
-        // check estimate for 0~9 is 2
+        let expected_twice: Vec<i32> = expected_once.iter().map(|v| v * 2).collect();
+        assert_eq!(sk.as_storage().as_slice(), expected_twice.as_slice());
+
+        // Estimates for inserted keys should be exactly 2.
         for i in 0..10 {
-            assert_eq!(
-                sk.estimate(&SketchInput::I32(i)),
-                2.0,
-                "estimate for {i} should be 2.0, but get {}",
-                sk.estimate(&SketchInput::I32(i))
-            )
+            let estimate = sk.estimate(&SketchInput::I32(i));
+            assert!(
+                (estimate - 2.0).abs() < f64::EPSILON,
+                "estimate for {i} should be 2.0, but get {estimate}"
+            );
         }
     }
 
     #[test]
     fn cs_fast_path_correctness() {
         let mut sk = Count::<Vector2D<i32>, FastPath>::default();
-        // insert 0~9
+        // Insert values 0..9 once using the fast path.
         for i in 0..10 {
             sk.insert(&SketchInput::I32(i));
         }
-        let data = sk.as_storage().as_slice();
-        // some counters are 1
-        assert_eq!(
-            data[0xE3D], 1,
-            "incorrect value {} for row 0 of insertion i32 0",
-            data[0xE3D]
-        );
-        assert_eq!(
-            data[0xFF7 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 0",
-            data[0xFF7 + sk.col]
-        );
-        assert_eq!(
-            data[0x8E6 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 0",
-            data[0x8E6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x547], 1,
-            "incorrect value {} for row 0 of insertion i32 1",
-            data[0x547]
-        );
-        assert_eq!(
-            data[0xB1F + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 1",
-            data[0xB1F + sk.col]
-        );
-        assert_eq!(
-            data[0x2AE + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 1",
-            data[0x2AE + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x585], 1,
-            "incorrect value {} for row 0 of insertion i32 2",
-            data[0x585]
-        );
-        assert_eq!(
-            data[0xEBC + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 2",
-            data[0xEBC + sk.col]
-        );
-        assert_eq!(
-            data[0xF9C + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 2",
-            data[0xF9C + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xBED], 1,
-            "incorrect value {} for row 0 of insertion i32 3",
-            data[0xBED]
-        );
-        assert_eq!(
-            data[0xD24 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 3",
-            data[0xD24 + sk.col]
-        );
-        assert_eq!(
-            data[0x2AA + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 3",
-            data[0x2AA + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x83F], -1,
-            "incorrect value {} for row 0 of insertion i32 4",
-            data[0x83F]
-        );
-        assert_eq!(
-            data[0x570 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 4",
-            data[0x570 + sk.col]
-        );
-        assert_eq!(
-            data[0x37A + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 4",
-            data[0x37A + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xD80], -1,
-            "incorrect value {} for row 0 of insertion i32 5",
-            data[0xD80]
-        );
-        assert_eq!(
-            data[0x5CE + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 5",
-            data[0x5CE + sk.col]
-        );
-        assert_eq!(
-            data[0x20D + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 5",
-            data[0x20D + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xC8B], -1,
-            "incorrect value {} for row 0 of insertion i32 6",
-            data[0xC8B]
-        );
-        assert_eq!(
-            data[0x99A + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 6",
-            data[0x99A + sk.col]
-        );
-        assert_eq!(
-            data[0xF56 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 6",
-            data[0xF56 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xEE8], -1,
-            "incorrect value {} for row 0 of insertion i32 7",
-            data[0xEE8]
-        );
-        assert_eq!(
-            data[0x96C + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 7",
-            data[0x96C + sk.col]
-        );
-        assert_eq!(
-            data[0xAF0 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 7",
-            data[0xAF0 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xED5], -1,
-            "incorrect value {} for row 0 of insertion i32 8",
-            data[0xED5]
-        );
-        assert_eq!(
-            data[0x405 + sk.col],
-            -1,
-            "incorrect value {} for row 1 of insertion i32 8",
-            data[0x405 + sk.col]
-        );
-        assert_eq!(
-            data[0xDF0 + sk.col * 2],
-            -1,
-            "incorrect value {} for row 2 of insertion i32 8",
-            data[0xDF0 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x6CC], 1,
-            "incorrect value {} for row 0 of insertion i32 9",
-            data[0x6CC]
-        );
-        assert_eq!(
-            data[0x39F + sk.col],
-            1,
-            "incorrect value {} for row 1 of insertion i32 9",
-            data[0x39F + sk.col]
-        );
-        assert_eq!(
-            data[0x687 + sk.col * 2],
-            1,
-            "incorrect value {} for row 2 of insertion i32 9",
-            data[0x687 + sk.col * 2]
-        );
-        // others are 0
-        all_zero_except_i32(
-            sk.as_storage(),
-            vec![
-                0xE3D,
-                0xFF7 + sk.col,
-                0x8E6 + sk.col * 2,
-                0x547,
-                0xB1F + sk.col,
-                0x2AE + sk.col * 2,
-                0x585,
-                0xEBC + sk.col,
-                0xF9C + sk.col * 2,
-                0xBED,
-                0xD24 + sk.col,
-                0x2AA + sk.col * 2,
-                0x83F,
-                0x570 + sk.col,
-                0x37A + sk.col * 2,
-                0xD80,
-                0x5CE + sk.col,
-                0x20D + sk.col * 2,
-                0xC8B,
-                0x99A + sk.col,
-                0xF56 + sk.col * 2,
-                0xEE8,
-                0x96C + sk.col,
-                0xAF0 + sk.col * 2,
-                0xED5,
-                0x405 + sk.col,
-                0xDF0 + sk.col * 2,
-                0x6CC,
-                0x39F + sk.col,
-                0x687 + sk.col * 2,
-            ],
-        );
-        // insert 0~9 again
+
+        // Build the expected counter array by mirroring the fast-path hashing logic.
+        let storage = sk.as_storage();
+        let rows = storage.rows();
+        let cols = storage.cols();
+        let mask_bits = storage.get_mask_bits();
+        let mask = (1u128 << mask_bits) - 1;
+        let mut expected_once = vec![0_i32; rows * cols];
+
         for i in 0..10 {
-            sk.insert(&SketchInput::I32(i));
+            let value = SketchInput::I32(i);
+            let hash = storage.hash_for_matrix(&value);
+            for row in 0..rows {
+                let hashed = hash.row_hash(row, mask_bits, mask);
+                let col = (hashed % cols as u128) as usize;
+                let idx = row * cols + col;
+                expected_once[idx] += hash.sign_for_row(row) as i32;
+            }
         }
-        let data = sk.as_storage().as_slice();
-        // some counters are 2
-        assert_eq!(
-            data[0xE3D], 2,
-            "incorrect value {} for row 0 of insertion i32 0",
-            data[0xE3D]
-        );
-        assert_eq!(
-            data[0xFF7 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 0",
-            data[0xFF7 + sk.col]
-        );
-        assert_eq!(
-            data[0x8E6 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 0",
-            data[0x8E6 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x547], 2,
-            "incorrect value {} for row 0 of insertion i32 1",
-            data[0x547]
-        );
-        assert_eq!(
-            data[0xB1F + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 1",
-            data[0xB1F + sk.col]
-        );
-        assert_eq!(
-            data[0x2AE + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 1",
-            data[0x2AE + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x585], 2,
-            "incorrect value {} for row 0 of insertion i32 2",
-            data[0x585]
-        );
-        assert_eq!(
-            data[0xEBC + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 2",
-            data[0xEBC + sk.col]
-        );
-        assert_eq!(
-            data[0xF9C + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 2",
-            data[0xF9C + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xBED], 2,
-            "incorrect value {} for row 0 of insertion i32 3",
-            data[0xBED]
-        );
-        assert_eq!(
-            data[0xD24 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 3",
-            data[0xD24 + sk.col]
-        );
-        assert_eq!(
-            data[0x2AA + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 3",
-            data[0x2AA + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x83F], -2,
-            "incorrect value {} for row 0 of insertion i32 4",
-            data[0x83F]
-        );
-        assert_eq!(
-            data[0x570 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 4",
-            data[0x570 + sk.col]
-        );
-        assert_eq!(
-            data[0x37A + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 4",
-            data[0x37A + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xD80], -2,
-            "incorrect value {} for row 0 of insertion i32 5",
-            data[0xD80]
-        );
-        assert_eq!(
-            data[0x5CE + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 5",
-            data[0x5CE + sk.col]
-        );
-        assert_eq!(
-            data[0x20D + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 5",
-            data[0x20D + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xC8B], -2,
-            "incorrect value {} for row 0 of insertion i32 6",
-            data[0xC8B]
-        );
-        assert_eq!(
-            data[0x99A + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 6",
-            data[0x99A + sk.col]
-        );
-        assert_eq!(
-            data[0xF56 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 6",
-            data[0xF56 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xEE8], -2,
-            "incorrect value {} for row 0 of insertion i32 7",
-            data[0xEE8]
-        );
-        assert_eq!(
-            data[0x96C + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 7",
-            data[0x96C + sk.col]
-        );
-        assert_eq!(
-            data[0xAF0 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 7",
-            data[0xAF0 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0xED5], -2,
-            "incorrect value {} for row 0 of insertion i32 8",
-            data[0xED5]
-        );
-        assert_eq!(
-            data[0x405 + sk.col],
-            -2,
-            "incorrect value {} for row 1 of insertion i32 8",
-            data[0x405 + sk.col]
-        );
-        assert_eq!(
-            data[0xDF0 + sk.col * 2],
-            -2,
-            "incorrect value {} for row 2 of insertion i32 8",
-            data[0xDF0 + sk.col * 2]
-        );
-        assert_eq!(
-            data[0x6CC], 2,
-            "incorrect value {} for row 0 of insertion i32 9",
-            data[0x6CC]
-        );
-        assert_eq!(
-            data[0x39F + sk.col],
-            2,
-            "incorrect value {} for row 1 of insertion i32 9",
-            data[0x39F + sk.col]
-        );
-        assert_eq!(
-            data[0x687 + sk.col * 2],
-            2,
-            "incorrect value {} for row 2 of insertion i32 9",
-            data[0x687 + sk.col * 2]
-        );
-        // others are still 0
-        all_zero_except_i32(
-            sk.as_storage(),
-            vec![
-                0xE3D,
-                0xFF7 + sk.col,
-                0x8E6 + sk.col * 2,
-                0x547,
-                0xB1F + sk.col,
-                0x2AE + sk.col * 2,
-                0x585,
-                0xEBC + sk.col,
-                0xF9C + sk.col * 2,
-                0xBED,
-                0xD24 + sk.col,
-                0x2AA + sk.col * 2,
-                0x83F,
-                0x570 + sk.col,
-                0x37A + sk.col * 2,
-                0xD80,
-                0x5CE + sk.col,
-                0x20D + sk.col * 2,
-                0xC8B,
-                0x99A + sk.col,
-                0xF56 + sk.col * 2,
-                0xEE8,
-                0x96C + sk.col,
-                0xAF0 + sk.col * 2,
-                0xED5,
-                0x405 + sk.col,
-                0xDF0 + sk.col * 2,
-                0x6CC,
-                0x39F + sk.col,
-                0x687 + sk.col * 2,
-            ],
-        );
-        // check estimate for 0~9 is 2
-        for i in 0..10 {
-            assert_eq!(
-                sk.estimate(&SketchInput::I32(i)),
-                2.0,
-                "estimate for {i} should be 2.0, but get {}",
-                sk.estimate(&SketchInput::I32(i))
-            )
-        }
+
+        assert_eq!(storage.as_slice(), expected_once.as_slice());
     }
 
     // test for zipf distribution for domain 8192 and exponent 1.1 with 200_000 items

@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand::distr::{self, Distribution, Uniform};
 use rand::rngs::StdRng;
 
-use crate::{SketchInput, Vector2D, hash_it_to_128};
+use crate::{SketchInput, Vector2D, hash64_seeded};
 
 const LOWER_32_MASK: u64 = (1u64 << 32) - 1;
 
@@ -215,6 +215,6 @@ where
 }
 
 pub fn counter_index(row: usize, key: &SketchInput, columns: usize) -> usize {
-    let hash = hash_it_to_128(row, key);
+    let hash = hash64_seeded(row, key);
     ((hash as u64 & LOWER_32_MASK) as usize) % columns
 }

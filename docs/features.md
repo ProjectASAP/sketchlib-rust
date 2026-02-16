@@ -21,37 +21,53 @@ This document provides a high-level overview of implemented and planned features
 
 - `SketchInput` - Unified type system for all sketches
 - `Vector1D`, `Vector2D`, `Vector3D` - High-performance storage structures
+- `MatrixStorage` + `FixedMatrix` - Fixed 5 × 2048 backing for quickstart CMS/CS
 - `CommonHeap` & `HHHeap` - Generic and specialized heaps for heavy hitter tracking
 - Deterministic hashing with seed management
+- `RegularPath` / `FastPath` modes - Type-level pairing of insert/estimate paths
 
 ✅ **Recommended Sketches** ([sketch_api.md](sketch_api.md))
 
 - **CountMin** - Frequency estimation with fast paths (2-3x speedup)
 - **Count & CountL2HH** - Count sketch with L2 heavy hitter support
-- **HyperLogLog** - Three variants (Original, HllDf, HllDs) for cardinality estimation
+- **HyperLogLog** - Three variants (Regular, DataFusion, HIP) for cardinality estimation
 - All built on optimized common structures
 
 ### Frameworks
 
 ✅ **Hydra** - Hierarchical heavy hitters for multi-dimensional queries ([sketch_api.md](sketch_api.md))
+  - Includes `MultiHeadHydra` for per-dimension counter sets
 
 ✅ **UnivMon** - Universal monitoring (L1, L2, entropy, cardinality from single structure) ([sketch_api.md](sketch_api.md))
 
 ✅ **HashLayer** - Hash-once-use-many pattern for coordinating multiple sketches with single hash computation
 
+✅ **NitroBatch** - Batch-mode sampling wrapper for CMS/Count FastPath
+
+✅ **Chapter** - Unified sketch enum for insert/merge/query across sketch types
+
+✅ **ExponentialHistogram** - Sliding window coordinator for mergeable sketches
+
+✅ **Orchestrator** - Node-level manager for sketches and frameworks (EH/HashLayer/Nitro)
+
 ### Performance Optimizations
 
 ✅ **Fast-path methods** - Hash reuse with bit-masking
 
-- `fast_insert()` - check [benchmark](benchmark.md) for detail
-- `fast_query_min()` / `fast_query_median()` - check [benchmark](benchmark.md) for detail
-- Single hash computation across multiple rows
+- `FastPath` mode uses a single hash across rows
+- `Vector2D::fast_query_*` uses bit-sliced row selection
+- `_with_hash_value` helpers enable cross-sketch hash reuse
+- `HashLayer` + `OrchestratedSketch` reuse hashes across sketch collections
 
 ✅ **Flat memory layouts** - Cache-friendly row-major storage
 
 ✅ **Zero-copy operations** - Direct slice access, borrowed lifetimes
 
 - **TODO**: requires more benchmark
+
+### Sampling
+
+✅ **Nitro sampling** - Streaming Nitro (`Vector2D`) and batch Nitro (`NitroBatch`)
 
 ---
 
@@ -119,11 +135,10 @@ This document provides a high-level overview of implemented and planned features
 - Bit-selective hashing: Generate only required bits (e.g., 32-bit instead of 128-bit)
 - Goal: Faster hashing when full 128-bit output isn't needed
 
-📋 **Cache-aware hashing**
+📋 **Hash reuse extensions**
 
-- Eliminate repeated allocations
-- Reuse hash results across multiple sketch operations
-- Hash once, use across framework of sketches
+- Broader hash-domain reuse across more sketch families
+- Optional shared hash caches for Hydra/MultiHeadHydra updates
 
 📋 **Prefetching hints**
 
@@ -155,11 +170,10 @@ This document provides a high-level overview of implemented and planned features
 - Alternative sketch-serving framework
 - [TODO: Define use cases and differences from Hydra/UnivMon]
 
-📋 **NitroSketch-style sampling**
+📋 **Nitro sampling refinements**
 
-- Research stage
-- Sampling layer for sketch acceleration
-- [TODO: Define geometry sampling use case]
+- Tighter accuracy/throughput tuning
+- Additional sampling tables beyond the 1% preset
 
 ### Testing & Quality
 

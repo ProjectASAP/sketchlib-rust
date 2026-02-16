@@ -1,53 +1,96 @@
+//! Hash-layer orchestration for hash-reuse-capable sketches.
+//! This module provides a small manager that reuses hashes across compatible sketches.
+
 use crate::{
-    Count, CountMin, FastPath, HllDf, LASTSTATE, SketchInput, Vector1D, Vector2D, hash_it_to_128,
-    input::AnySketch,
+    Count, CountMin, DataFusion, FastPath, HyperLogLog, SketchInput, Vector1D, Vector2D,
+    sketch_framework::{CardinalitySketch, FreqSketch, HashDomain, HashValue, OrchestratedSketch},
 };
 
 pub struct HashLayer {
-    sketches: Vector1D<AnySketch>,
+    sketches: Vector1D<OrchestratedSketch>,
 }
 
 impl Default for HashLayer {
     fn default() -> Self {
         Self::new(vec![
-            AnySketch::CountMin(CountMin::<Vector2D<i32>, FastPath>::default()),
-            AnySketch::Count(Count::<Vector2D<i32>, FastPath>::default()),
-            AnySketch::HllDf(HllDf::default()),
+            OrchestratedSketch::Freq(FreqSketch::CountMin(
+                CountMin::<Vector2D<i32>, FastPath>::default(),
+            )),
+            OrchestratedSketch::Freq(FreqSketch::Count(
+                Count::<Vector2D<i32>, FastPath>::default(),
+            )),
+            OrchestratedSketch::Cardinality(CardinalitySketch::HllDf(
+                HyperLogLog::<DataFusion>::default(),
+            )),
         ])
+        .expect("default HashLayer sketches must support hash reuse")
     }
 }
 
 impl HashLayer {
-    pub fn new(lst: Vec<AnySketch>) -> Self {
-        HashLayer {
+    pub fn new(lst: Vec<OrchestratedSketch>) -> Result<Self, &'static str> {
+        for sketch in &lst {
+            Self::validate(sketch)?;
+        }
+        Ok(HashLayer {
             sketches: Vector1D::from_vec(lst),
+        })
+    }
+
+    pub fn push(&mut self, sketch: OrchestratedSketch) -> Result<(), &'static str> {
+        Self::validate(&sketch)?;
+        self.sketches.push(sketch);
+        Ok(())
+    }
+
+    fn validate(sketch: &OrchestratedSketch) -> Result<(), &'static str> {
+        if sketch.supports_hash_reuse() {
+            Ok(())
+        } else {
+            Err("OrchestratedSketch does not support hash reuse")
         }
     }
 
-    /// Insert to all sketches using a shared hash computation
+    /// Insert to all sketches using sketch-specific hash computation
     pub fn insert_all(&mut self, val: &SketchInput) {
-        let hashed_val = hash_it_to_128(LASTSTATE, val);
-        self.insert_all_with_hash(hashed_val);
+        let mut hash_cache: Vec<(HashDomain, HashValue)> = Vec::new();
+        for i in 0..self.sketches.len() {
+            if let Some(domain) = self.sketches[i].hash_domain() {
+                let hash = Self::hash_for_domain(&mut hash_cache, domain, val);
+                self.sketches[i].insert_with_hash_value(&hash, val);
+            } else {
+                self.sketches[i].insert(val);
+            }
+        }
     }
 
-    /// Insert to specific sketch indices using a shared hash computation
+    /// Insert to specific sketch indices using sketch-specific hash computation
     pub fn insert_at(&mut self, indices: &[usize], val: &SketchInput) {
-        let hashed_val = hash_it_to_128(LASTSTATE, val);
-        self.insert_at_with_hash(indices, hashed_val);
+        let mut hash_cache: Vec<(HashDomain, HashValue)> = Vec::new();
+        for &idx in indices {
+            if idx < self.sketches.len() {
+                if let Some(domain) = self.sketches[idx].hash_domain() {
+                    let hash = Self::hash_for_domain(&mut hash_cache, domain, val);
+                    self.sketches[idx].insert_with_hash_value(&hash, val);
+                } else {
+                    self.sketches[idx].insert(val);
+                }
+            }
+        }
     }
 
     /// Insert to all sketches using a pre-computed hash value
-    pub fn insert_all_with_hash(&mut self, hash_value: u128) {
+    pub fn insert_all_with_hash(&mut self, hash_value: &HashValue) {
         for i in 0..self.sketches.len() {
-            self.sketches[i].insert_with_hash(hash_value);
+            let _ = self.sketches[i].insert_with_hash_only(hash_value);
         }
     }
 
     /// Insert to specific sketch indices using a pre-computed hash value
-    pub fn insert_at_with_hash(&mut self, indices: &[usize], hash_value: u128) {
+    pub fn insert_at_with_hash(&mut self, indices: &[usize], hash_value: &HashValue) {
         for &idx in indices {
             if idx < self.sketches.len() {
-                self.sketches[idx].insert_with_hash(hash_value);
+                let _ = self.sketches[idx].insert_with_hash_only(hash_value);
             }
         }
     }
@@ -57,30 +100,46 @@ impl HashLayer {
         if index >= self.sketches.len() {
             return Err("Index out of bounds");
         }
-        let hashed_val = hash_it_to_128(LASTSTATE, val);
-        self.sketches[index].query_with_hash(hashed_val)
+        if let Some(domain) = self.sketches[index].hash_domain() {
+            let mut hash_cache = Vec::new();
+            let hash = Self::hash_for_domain(&mut hash_cache, domain, val);
+            self.sketches[index].query_with_hash_value(&hash)
+        } else {
+            self.sketches[index].query(val)
+        }
     }
 
     /// Query a specific sketch by index using a pre-computed hash value
-    pub fn query_at_with_hash(&self, index: usize, hash_value: u128) -> Result<f64, &'static str> {
+    pub fn query_at_with_hash(
+        &self,
+        index: usize,
+        hash_value: &HashValue,
+    ) -> Result<f64, &'static str> {
         if index >= self.sketches.len() {
             return Err("Index out of bounds");
         }
-        self.sketches[index].query_with_hash(hash_value)
+        self.sketches[index].query_with_hash_value(hash_value)
     }
 
     /// Query all sketches and return results as a vector
     pub fn query_all(&self, val: &SketchInput) -> Vec<Result<f64, &'static str>> {
-        let hashed_val = hash_it_to_128(LASTSTATE, val);
+        let mut hash_cache: Vec<(HashDomain, HashValue)> = Vec::new();
         (0..self.sketches.len())
-            .map(|i| self.sketches[i].query_with_hash(hashed_val))
+            .map(|i| {
+                if let Some(domain) = self.sketches[i].hash_domain() {
+                    let hash = Self::hash_for_domain(&mut hash_cache, domain, val);
+                    self.sketches[i].query_with_hash_value(&hash)
+                } else {
+                    self.sketches[i].query(val)
+                }
+            })
             .collect()
     }
 
     /// Query all sketches using a pre-computed hash value
-    pub fn query_all_with_hash(&self, hash_value: u128) -> Vec<Result<f64, &'static str>> {
+    pub fn query_all_with_hash(&self, hash_value: &HashValue) -> Vec<Result<f64, &'static str>> {
         (0..self.sketches.len())
-            .map(|i| self.sketches[i].query_with_hash(hash_value))
+            .map(|i| self.sketches[i].query_with_hash_value(hash_value))
             .collect()
     }
 
@@ -95,7 +154,7 @@ impl HashLayer {
     }
 
     /// Get a reference to a specific sketch
-    pub fn get(&self, index: usize) -> Option<&AnySketch> {
+    pub fn get(&self, index: usize) -> Option<&OrchestratedSketch> {
         if index < self.sketches.len() {
             Some(&self.sketches[index])
         } else {
@@ -104,12 +163,25 @@ impl HashLayer {
     }
 
     /// Get a mutable reference to a specific sketch
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut AnySketch> {
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut OrchestratedSketch> {
         if index < self.sketches.len() {
             Some(&mut self.sketches[index])
         } else {
             None
         }
+    }
+
+    fn hash_for_domain(
+        cache: &mut Vec<(HashDomain, HashValue)>,
+        domain: HashDomain,
+        input: &SketchInput,
+    ) -> HashValue {
+        if let Some((_, hash)) = cache.iter().find(|(d, _)| *d == domain) {
+            return hash.clone();
+        }
+        let hash = domain.hash_for_input(input);
+        cache.push((domain, hash));
+        cache.last().expect("hash cache entry").1.clone()
     }
 }
 
@@ -117,6 +189,7 @@ impl HashLayer {
 mod tests {
     use super::*;
     use crate::test_utils::sample_zipf_u64;
+    use crate::{CANONICAL_HASH_SEED, MatrixHashType, hash128_seeded};
     use std::collections::HashMap;
 
     const SAMPLE_SIZE: usize = 10_000;
@@ -261,18 +334,24 @@ mod tests {
         // Insert using pre-computed hash (the key optimization)
         for &value in &data {
             let input = SketchInput::U64(value);
-            let hash = hash_it_to_128(LASTSTATE, &input);
-            layer.insert_all_with_hash(hash);
+            let hash = HashValue::Matrix(MatrixHashType::Packed128(hash128_seeded(
+                CANONICAL_HASH_SEED,
+                &input,
+            )));
+            layer.insert_all_with_hash(&hash);
         }
 
         // Query using pre-computed hash
         let mut errors = Vec::new();
         for (&key, &true_count) in baseline.iter().take(50) {
             let input = SketchInput::U64(key);
-            let hash = hash_it_to_128(LASTSTATE, &input);
+            let hash = HashValue::Matrix(MatrixHashType::Packed128(hash128_seeded(
+                CANONICAL_HASH_SEED,
+                &input,
+            )));
 
             let countmin_est = layer
-                .query_at_with_hash(0, hash)
+                .query_at_with_hash(0, &hash)
                 .expect("Query should succeed");
             let err = relative_error(countmin_est, true_count);
             errors.push(err);
@@ -347,8 +426,11 @@ mod tests {
         assert_eq!(result.unwrap_err(), "Index out of bounds");
 
         // Test query_at_with_hash bounds checking
-        let hash = hash_it_to_128(LASTSTATE, &input);
-        let result = layer.query_at_with_hash(999, hash);
+        let hash = HashValue::Matrix(MatrixHashType::Packed128(hash128_seeded(
+            CANONICAL_HASH_SEED,
+            &input,
+        )));
+        let result = layer.query_at_with_hash(999, &hash);
         assert!(result.is_err(), "Should error on out of bounds query");
         assert_eq!(result.unwrap_err(), "Index out of bounds");
     }
@@ -357,13 +439,15 @@ mod tests {
     fn test_hashlayer_custom_sketches() {
         // Create a custom HashLayer with specific sketch configurations
         let sketches = vec![
-            AnySketch::CountMin(CountMin::<Vector2D<i32>, FastPath>::with_dimensions(
-                5, 2048,
+            OrchestratedSketch::Freq(FreqSketch::CountMin(
+                CountMin::<Vector2D<i32>, FastPath>::with_dimensions(5, 2048),
             )),
-            AnySketch::Count(Count::<Vector2D<i32>, FastPath>::with_dimensions(5, 2048)),
+            OrchestratedSketch::Freq(FreqSketch::Count(
+                Count::<Vector2D<i32>, FastPath>::with_dimensions(5, 2048),
+            )),
         ];
 
-        let mut layer = HashLayer::new(sketches);
+        let mut layer = HashLayer::new(sketches).expect("custom HashLayer should be valid");
         assert_eq!(layer.len(), 2);
         assert!(!layer.is_empty());
 

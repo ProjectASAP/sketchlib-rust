@@ -2,69 +2,20 @@ use crate::{SketchInput, Vector2D};
 use serde::{Deserialize, Serialize};
 
 use super::super::sketches::*;
+use super::UnivMon;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound(deserialize = "'de: 'a"))]
-pub enum Chapter<'a> {
+pub enum Chapter {
     CM(CountMin<Vector2D<i32>, FastPath>),
-    #[serde(borrow)]
-    COCO(Coco<'a>),
+    COCO(Coco),
     CU(CountL2HH),
     ELASTIC(Elastic),
-    HLL(HllDf),
+    HLL(HyperLogLog<DataFusion>),
     KLL(KLL),
     UNIFORM(UniformSampling),
     // LOCHER(LocherSketch),
-    // UNIVMON(UnivMon),
+    UNIVMON(UnivMon),
 }
-
-// impl L2HH {
-//     /// Creates a count-based L2 heavy hitter sketch with the requested dimensions.
-//     pub fn count_with_dimensions(rows: usize, cols: usize) -> Self {
-//         L2HH::COUNT(VectorCount::with_dimensions(rows, cols))
-//     }
-
-//     /// Inserts a single observation.
-//     pub fn insert(&mut self, value: &SketchInput) {
-//         let _ = self.update(value, 1);
-//     }
-
-//     /// Inserts an observation with an explicit weight and returns the current estimate.
-//     pub fn update(&mut self, value: &SketchInput, weight: i64) -> f64 {
-//         match self {
-//             L2HH::COUNT(sketch) => {
-//                 sketch.insert_with_count(value, weight);
-//                 sketch.estimate(value)
-//             }
-//         }
-//     }
-
-//     /// Returns the estimated frequency for the provided value.
-//     pub fn estimate(&self, value: &SketchInput) -> f64 {
-//         match self {
-//             L2HH::COUNT(sketch) => sketch.estimate(value),
-//         }
-//     }
-
-//     /// Provides an optional query interface for compatibility with older code.
-//     pub fn query(&self, value: &SketchInput) -> Option<f64> {
-//         Some(self.estimate(value))
-//     }
-
-//     /// Approximates the L2 norm of the sketch.
-//     pub fn get_l2(&self) -> f64 {
-//         match self {
-//             L2HH::COUNT(sketch) => sketch.l2(),
-//         }
-//     }
-
-//     /// Merges another L2 heavy hitter sketch into this one.
-//     pub fn merge(&mut self, other: &L2HH) {
-//         match (self, other) {
-//             (L2HH::COUNT(left), L2HH::COUNT(right)) => left.merge(right),
-//         }
-//     }
-// }
 
 /// this should be a temporary function
 /// modify KLL to remove this function
@@ -90,12 +41,16 @@ pub fn iv_to_f64(i: &SketchInput) -> f64 {
     }
 }
 
-impl<'a> Chapter<'a> {
+impl Chapter {
     /// Insert a value into the sketch
-    pub fn insert(&mut self, val: &SketchInput<'a>) {
+    pub fn insert(&mut self, val: &SketchInput) {
         match self {
             Chapter::CM(sketch) => sketch.insert(val),
-            Chapter::COCO(sketch) => sketch.insert(val, 1),
+            Chapter::COCO(sketch) => match val {
+                SketchInput::Str(s) => sketch.insert(s, 1),
+                SketchInput::String(s) => sketch.insert(s.as_str(), 1),
+                _ => {}
+            },
             Chapter::CU(sketch) => sketch.fast_insert_with_count(val, 1),
             Chapter::ELASTIC(sketch) => match val {
                 SketchInput::String(s) => sketch.insert(s.to_string()),
@@ -125,26 +80,19 @@ impl<'a> Chapter<'a> {
             }
             Chapter::UNIFORM(sketch) => {
                 let _ = sketch.update_input(val);
-            } // Chapter::LOCHER(sketch) => {
-              //     // Locher requires a String
-              //     if let SketchInput::String(s) = val {
-              //         sketch.insert(s, 1);
-              //     }
-              // }
-              // Chapter::UNIVMON(sketch) => {
-              //     // UnivMon requires update with key, value, bottom_layer_num
-              //     // Using default bottom_layer_num of 0
-              //     if let SketchInput::Str(s) = val {
-              //         sketch.update(s, 1, 0);
-              //     } else if let SketchInput::String(s) = val {
-              //         sketch.update(s.as_str(), 1, 0);
-              //     }
-              // }
+            }
+            Chapter::UNIVMON(sketch) => sketch.insert(val, 1),
+            // Chapter::LOCHER(sketch) => {
+            //     // Locher requires a String
+            //     if let SketchInput::String(s) = val {
+            //         sketch.insert(s, 1);
+            //     }
+            // }
         }
     }
 
     /// Merge another sketch of the same type into this one
-    pub fn merge(&mut self, other: &Chapter<'a>) -> Result<(), &'static str> {
+    pub fn merge(&mut self, other: &Chapter) -> Result<(), &'static str> {
         match (self, other) {
             (Chapter::CM(s), Chapter::CM(o)) => {
                 s.merge(o);
@@ -171,27 +119,30 @@ impl<'a> Chapter<'a> {
                 Ok(())
             }
             (Chapter::UNIFORM(s), Chapter::UNIFORM(o)) => s.merge(o),
+            (Chapter::UNIVMON(s), Chapter::UNIVMON(o)) => {
+                s.merge(o);
+                Ok(())
+            }
             // (Bucket::LOCHER(s), Bucket::LOCHER(o)) => {
             //     s.merge(o);
             //     Ok(())
             // }, // not yet
-            // (Chapter::UNIVMON(s), Chapter::UNIVMON(o)) => {
-            //     s.merge_with(o);
-            //     Ok(())
-            // }
             _ => Err("Cannot merge sketches of different types"),
         }
     }
 
-    pub fn query(&self, key: &SketchInput<'a>) -> Result<f64, &'static str> {
+    pub fn query(&self, key: &SketchInput) -> Result<f64, &'static str> {
         match (self, key) {
             (Chapter::CM(count_min), _) => Ok(count_min.estimate(key) as f64),
-            (Chapter::COCO(coco), _) => Ok(coco.clone().estimate(key.clone()) as f64),
+            (Chapter::COCO(coco), SketchInput::Str(s)) => Ok(coco.clone().estimate(s) as f64),
+            (Chapter::COCO(coco), SketchInput::String(s)) => {
+                Ok(coco.clone().estimate(s.as_str()) as f64)
+            }
             (Chapter::CU(count_univ), _) => Ok(count_univ.fast_get_est(key)),
             (Chapter::ELASTIC(elastic), SketchInput::String(s)) => {
                 Ok(elastic.clone().query(s.clone()) as f64)
             }
-            (Chapter::HLL(hll_df_modified), _) => Ok(hll_df_modified.get_est() as f64),
+            (Chapter::HLL(hll_df_modified), _) => Ok(hll_df_modified.estimate() as f64),
             (Chapter::KLL(kll), SketchInput::I32(i)) => Ok(kll.quantile(*i as f64)),
             (Chapter::KLL(kll), SketchInput::I64(i)) => Ok(kll.quantile(*i as f64)),
             (Chapter::KLL(kll), SketchInput::U32(u)) => Ok(kll.quantile(*u as f64)),
@@ -220,6 +171,20 @@ impl<'a> Chapter<'a> {
                 "total_seen" => Ok(sampler.total_seen() as f64),
                 _ => Err("Unsupported command for UniformSampling"),
             },
+            (Chapter::UNIVMON(um), SketchInput::Str(cmd)) => match *cmd {
+                "cardinality" | "card" => Ok(um.calc_card()),
+                "l1" => Ok(um.calc_l1()),
+                "l2" => Ok(um.calc_l2()),
+                "entropy" => Ok(um.calc_entropy()),
+                _ => Err("Unsupported command for UnivMon"),
+            },
+            (Chapter::UNIVMON(um), SketchInput::String(cmd)) => match cmd.as_str() {
+                "cardinality" | "card" => Ok(um.calc_card()),
+                "l1" => Ok(um.calc_l1()),
+                "l2" => Ok(um.calc_l2()),
+                "entropy" => Ok(um.calc_entropy()),
+                _ => Err("Unsupported command for UnivMon"),
+            },
             // (Chapter::LOCHER(locher_sketch), SketchInput::Str(s)) => Ok(locher_sketch.estimate(*s)),
             _ => Err("Parameter type and Sketch Type Mismatched"),
         }
@@ -235,8 +200,8 @@ impl<'a> Chapter<'a> {
             Chapter::HLL(_) => "HLL",
             Chapter::KLL(_) => "KLL",
             Chapter::UNIFORM(_) => "UniformSampling",
+            Chapter::UNIVMON(_) => "UnivMon",
             // Chapter::LOCHER(_) => "Locher",
-            // Chapter::UNIVMON(_) => "UnivMon",
         }
     }
 }

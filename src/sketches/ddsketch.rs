@@ -1,3 +1,5 @@
+use crate::SketchInput;
+use crate::common::input::sketch_input_to_f64;
 use crate::common::structures::Vector1D;
 use rmp_serde::decode::Error as RmpDecodeError;
 use rmp_serde::encode::Error as RmpEncodeError;
@@ -159,6 +161,14 @@ impl DDSketch {
 
         let k = self.key_for(v);
         self.store.add_one(k);
+    }
+
+    /// Add a sample from SketchInput.
+    #[inline(always)]
+    pub fn add_input(&mut self, v: &SketchInput) -> Result<(), &'static str> {
+        let value = sketch_input_to_f64(v).map_err(|_| "DDSketch only accepts numeric inputs")?;
+        self.add(value);
+        Ok(())
     }
 
     /// Quantile estimate for quantile q in [0, 1].

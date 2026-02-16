@@ -1,89 +1,18 @@
+//! Shared input, query, and counter types used across sketches.
+//! This module defines value wrappers, heap-friendly items, and Hydra/UnivMon helpers.
+
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     hash::{Hash, Hasher},
 };
 
-use crate::{Count, CountL2HH, CountMin, FastPath, HllDf, KLL, UnivMon, Vector2D};
+use crate::{
+    Count, CountL2HH, CountMin, DataFusion, FastPath, HyperLogLog, KLL, MatrixHashType, UnivMon,
+    Vector2D, hash_for_matrix,
+};
 
-/// enum that can be any sketch type
-/// Provides a unified interface for different sketch implementations
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AnySketch {
-    CountMin(CountMin<Vector2D<i32>, FastPath>),
-    Count(Count<Vector2D<i32>, FastPath>),
-    HllDf(HllDf),
-}
-
-impl AnySketch {
-    /// Insert a value into the sketch
-    pub fn insert(&mut self, val: &SketchInput) {
-        match self {
-            AnySketch::CountMin(sketch) => sketch.insert(val),
-            AnySketch::Count(sketch) => sketch.insert(val),
-            AnySketch::HllDf(sketch) => sketch.insert(val),
-        }
-    }
-
-    /// Insert a value into the sketch
-    pub fn insert_with_hash(&mut self, hashed_val: u128) {
-        match self {
-            AnySketch::CountMin(sketch) => sketch.fast_insert_with_hash_value(hashed_val),
-            AnySketch::Count(sketch) => sketch.fast_insert_with_hash_value(hashed_val),
-            AnySketch::HllDf(sketch) => sketch.insert_with_hash(hashed_val as u64),
-        }
-    }
-
-    /// Merge another sketch of the same type into this one
-    pub fn merge(&mut self, other: &AnySketch) -> Result<(), &'static str> {
-        match (self, other) {
-            (AnySketch::CountMin(s), AnySketch::CountMin(o)) => {
-                s.merge(o);
-                Ok(())
-            }
-            (AnySketch::Count(s), AnySketch::Count(o)) => {
-                s.merge(o);
-                Ok(())
-            }
-            (AnySketch::HllDf(s), AnySketch::HllDf(o)) => {
-                s.merge(o);
-                Ok(())
-            }
-            _ => Err("Cannot merge sketches of different types"),
-        }
-    }
-
-    /// Query the sketch for an estimate
-    pub fn query(&self, key: &SketchInput) -> Result<f64, &'static str> {
-        match self {
-            AnySketch::CountMin(cm) => Ok(cm.estimate(key) as f64),
-            AnySketch::Count(cs) => Ok(cs.estimate(key)),
-            AnySketch::HllDf(hll_df) => Ok(hll_df.get_est() as f64),
-        }
-    }
-
-    /// Query using a pre-computed hash value
-    /// Note: For HllDf (cardinality sketch), the hash_value is ignored and total cardinality is returned
-    pub fn query_with_hash(&self, hash_value: u128) -> Result<f64, &'static str> {
-        match self {
-            AnySketch::CountMin(cm) => Ok(cm.fast_estimate_with_hash(hash_value) as f64),
-            AnySketch::Count(cs) => Ok(cs.fast_estimate_with_hash(hash_value)),
-            AnySketch::HllDf(hll_df) => Ok(hll_df.get_est() as f64),
-        }
-    }
-
-    /// Get the type of sketch as a string
-    pub fn sketch_type(&self) -> &'static str {
-        match self {
-            AnySketch::CountMin(_) => "CountMin",
-            AnySketch::Count(_) => "Count",
-            AnySketch::HllDf(_) => "HllDf",
-        }
-    }
-}
-
-/// enum to wrap input for sketch
-/// mainly supports primitive type
+/// Input wrapper for sketch APIs (supports primitive and borrowed values).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SketchInput<'a> {
     I8(i8),
@@ -105,13 +34,7 @@ pub enum SketchInput<'a> {
     Bytes(&'a [u8]),
 }
 
-/// enum to wrap items heap can hold
-/// mainly supports primitive type
-/// borrowed type is not suitable here
-/// user may insert some value to the heap and get rid of the value
-/// however, the heap may live longer than user holding the value
-/// in other words, sketch input can borrow the value
-/// but when it comes to heap, the value should be owned, not borrowed
+/// Owned counterpart to `SketchInput` for heap storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd)]
 pub enum HeapItem {
     I8(i8),
@@ -153,6 +76,31 @@ pub fn input_to_owned<'a>(input: &SketchInput<'a>) -> HeapItem {
             let byte_array = (*items).to_owned();
             let s = String::from_utf8(byte_array).unwrap();
             HeapItem::String(s)
+        }
+    }
+}
+
+/// Converts SketchInput to f64 for numeric-only sketches.
+/// Returns an error when the input is not numeric.
+#[inline(always)]
+pub(crate) fn sketch_input_to_f64(input: &SketchInput) -> Result<f64, &'static str> {
+    match input {
+        SketchInput::I8(v) => Ok(*v as f64),
+        SketchInput::I16(v) => Ok(*v as f64),
+        SketchInput::I32(v) => Ok(*v as f64),
+        SketchInput::I64(v) => Ok(*v as f64),
+        SketchInput::I128(v) => Ok(*v as f64),
+        SketchInput::ISIZE(v) => Ok(*v as f64),
+        SketchInput::U8(v) => Ok(*v as f64),
+        SketchInput::U16(v) => Ok(*v as f64),
+        SketchInput::U32(v) => Ok(*v as f64),
+        SketchInput::U64(v) => Ok(*v as f64),
+        SketchInput::U128(v) => Ok(*v as f64),
+        SketchInput::USIZE(v) => Ok(*v as f64),
+        SketchInput::F32(v) => Ok(*v as f64),
+        SketchInput::F64(v) => Ok(*v),
+        SketchInput::Str(_) | SketchInput::String(_) | SketchInput::Bytes(_) => {
+            Err("KLL sketch only accepts numeric inputs")
         }
     }
 }
@@ -283,8 +231,7 @@ impl Hash for HeapItem {
     }
 }
 
-/// enum that can be used by UnivMon
-/// using CountL2HH as State-Of-Art example
+/// Counter wrapper for UnivMon (currently backed by CountL2HH).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum L2HH {
     COUNT(CountL2HH),
@@ -318,8 +265,7 @@ impl L2HH {
     }
 }
 
-/// Query type for Hydra sketches
-/// Different sketches support different query semantics
+/// Query type for Hydra sketches.
 #[derive(Clone, Debug)]
 pub enum HydraQuery<'a> {
     /// Query for frequency of a specific item (for CountMin, Count, etc.)
@@ -351,11 +297,11 @@ impl<'a> fmt::Display for HydraQuery<'a> {
     }
 }
 
-/// enum that can be used as counter in Hydra
+/// Counter variants supported by Hydra.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum HydraCounter {
     CM(CountMin<Vector2D<i32>, FastPath>),
-    HLL(HllDf),
+    HLL(HyperLogLog<DataFusion>),
     CS(Count<Vector2D<i32>, FastPath>),
     KLL(KLL),
     UNIVERSAL(UnivMon),
@@ -374,6 +320,14 @@ impl fmt::Display for HydraCounter {
 }
 
 impl HydraCounter {
+    pub(crate) fn hash_for_value(&self, value: &SketchInput) -> Option<MatrixHashType> {
+        match self {
+            HydraCounter::CM(cm) => Some(hash_for_matrix(cm.rows(), cm.cols(), value)),
+            HydraCounter::CS(count) => Some(hash_for_matrix(count.rows(), count.cols(), value)),
+            _ => None,
+        }
+    }
+
     /// Insert a value into the counter sketch
     /// This updates the underlying sketch with the given value
     pub fn insert(&mut self, value: &SketchInput, count: Option<i32>) {
@@ -396,7 +350,12 @@ impl HydraCounter {
 
     /// Insert a value using a pre-computed hash when supported.
     /// For sketches that require full values (e.g., KLL, UnivMon), this falls back to `insert`.
-    pub fn insert_with_hash(&mut self, value: &SketchInput, hashed_val: u128, count: Option<i32>) {
+    pub fn insert_with_hash(
+        &mut self,
+        value: &SketchInput,
+        hashed_val: &MatrixHashType,
+        count: Option<i32>,
+    ) {
         match (self, count) {
             (HydraCounter::CM(cm), None) => cm.fast_insert_with_hash_value(hashed_val),
             (HydraCounter::CM(cm), Some(i)) => cm.fast_insert_many_with_hash_value(hashed_val, i),
@@ -442,7 +401,7 @@ impl HydraCounter {
     pub fn query(&self, query: &HydraQuery) -> Result<f64, String> {
         match (self, query) {
             (HydraCounter::CM(cm), HydraQuery::Frequency(value)) => Ok(cm.estimate(value) as f64),
-            (HydraCounter::HLL(hll_df), HydraQuery::Cardinality) => Ok(hll_df.get_est() as f64),
+            (HydraCounter::HLL(hll_df), HydraQuery::Cardinality) => Ok(hll_df.estimate() as f64),
             (HydraCounter::CS(count), HydraQuery::Frequency(value)) => {
                 Ok(count.estimate(value) as f64)
             }

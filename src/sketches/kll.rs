@@ -1,40 +1,25 @@
-//! A translation of kll golang implementation
-//! https://github.com/dgryski/go-kll
+//! KLL quantile sketch (compact / insert-optimized variant).
+//!
+//! Insertion and compaction follow the compact KLL layout from:
+//! "Insert-optimized implementation of streaming data sketches" (Pfeil et al., 2025).
+//! CDF construction is adapted from dgryski's Go implementation.
+//!
+//! References:
+//! - https://www.amazon.science/publications/insert-optimized-implementation-of-streaming-data-sketches
+//! - https://github.com/dgryski/go-kll
 
 use rand::{Rng, rng};
 use rmp_serde::decode::Error as RmpDecodeError;
 use rmp_serde::encode::Error as RmpEncodeError;
 use serde::{Deserialize, Serialize};
 
+use crate::common::input::sketch_input_to_f64;
 use crate::{SketchInput, Vector1D};
 
 const CAPACITY_CACHE_LEN: usize = 20;
 const MAX_CACHEABLE_K: usize = 26_602;
 const CAPACITY_DECAY: f64 = 2.0 / 3.0;
-
-/// Convert SketchInput to f64 for KLL sketch
-/// Returns an error if the input is not numeric
-fn sketch_input_to_f64(input: &SketchInput) -> Result<f64, &'static str> {
-    match input {
-        SketchInput::I8(v) => Ok(*v as f64),
-        SketchInput::I16(v) => Ok(*v as f64),
-        SketchInput::I32(v) => Ok(*v as f64),
-        SketchInput::I64(v) => Ok(*v as f64),
-        SketchInput::I128(v) => Ok(*v as f64),
-        SketchInput::ISIZE(v) => Ok(*v as f64),
-        SketchInput::U8(v) => Ok(*v as f64),
-        SketchInput::U16(v) => Ok(*v as f64),
-        SketchInput::U32(v) => Ok(*v as f64),
-        SketchInput::U64(v) => Ok(*v as f64),
-        SketchInput::U128(v) => Ok(*v as f64),
-        SketchInput::USIZE(v) => Ok(*v as f64),
-        SketchInput::F32(v) => Ok(*v as f64),
-        SketchInput::F64(v) => Ok(*v),
-        SketchInput::Str(_) | SketchInput::String(_) | SketchInput::Bytes(_) => {
-            Err("KLL sketch only accepts numeric inputs")
-        }
-    }
-}
+const DEFAULT_K: i32 = 200;
 
 /// Coin generates deterministic pseudo-random coin flips while amortizing
 /// calls to the RNG by consuming one bit at a time from a 64-bit buffer.
@@ -98,6 +83,7 @@ pub struct CdfEntry {
     quantile: f64,
 }
 
+/// KLL quantile sketch using a compact, insert-optimized layout.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KLL {
     items: Vector1D<f64>, // compactors, packed
@@ -120,11 +106,12 @@ pub struct KLL {
 
 impl Default for KLL {
     fn default() -> Self {
-        Self::init_kll(200)
+        Self::init_kll(DEFAULT_K)
     }
 }
 
 impl KLL {
+    /// Creates a KLL sketch with the given `k` and `m` parameters.
     pub fn init(k: usize, m: usize) -> Self {
         let mut norm_m = m.min(MAX_CACHEABLE_K);
         norm_m = norm_m.max(2);
@@ -147,6 +134,7 @@ impl KLL {
         s
     }
 
+    /// Creates a KLL sketch with default `m` and the provided `k`.
     pub fn init_kll(k: i32) -> Self {
         Self::init(k as usize, 8)
     }
@@ -264,6 +252,8 @@ impl KLL {
         let tail_len = items.len() - end_garbage;
 
         if tail_len > 0 {
+            // Safety: source and destination ranges may overlap, but `ptr::copy` handles overlap.
+            // The ranges are within `items` and `tail_len` ensures we stay in-bounds.
             unsafe {
                 let ptr = items.as_mut_ptr();
                 std::ptr::copy(ptr.add(end_garbage), ptr.add(start_garbage), tail_len);
@@ -289,6 +279,7 @@ impl KLL {
         levels_slice[self.num_levels] = self.items.len();
     }
 
+    /// Prints the compactors for debugging.
     pub fn print_compactors(&self) {
         println!(
             "KLL Packed (k={}, levels={}, items={})",
@@ -306,8 +297,9 @@ impl KLL {
         }
     }
 
-    pub fn cdf(&self) -> CDF {
-        let mut cdf = CDF {
+    /// Builds a CDF representation of the sketch.
+    pub fn cdf(&self) -> Cdf {
+        let mut cdf = Cdf {
             entries: Vector1D::init(self.buffer_size()),
         };
         let mut total_w = 0usize;
@@ -346,17 +338,20 @@ impl KLL {
         cdf
     }
 
+    /// Merges another sketch into this one.
     pub fn merge(&mut self, other: &KLL) {
         for &value in other.items.as_slice() {
             self.push_value(value);
         }
     }
 
+    /// Returns the estimated value at quantile `q`.
     pub fn quantile(&self, q: f64) -> f64 {
         let cdf = self.cdf();
         cdf.query(q)
     }
 
+    /// Returns the estimated rank of value `x`.
     pub fn rank(&self, x: f64) -> usize {
         let mut r = 0;
         let levels = self.levels.as_slice();
@@ -378,6 +373,7 @@ impl KLL {
         r
     }
 
+    /// Returns the total count of observations seen by the sketch.
     pub fn count(&self) -> usize {
         let mut total = 0;
         for h in 0..self.num_levels {
@@ -405,12 +401,13 @@ impl KLL {
     }
 }
 
-/// the CDF for query quantile
-pub struct CDF {
+/// The CDF for quantile queries.
+pub struct Cdf {
     entries: Vector1D<CdfEntry>,
 }
 
-impl CDF {
+impl Cdf {
+    /// Returns the quantile for value `x` using the CDF table.
     pub fn quantile(&self, x: f64) -> f64 {
         if self.entries.is_empty() {
             return 0.0;
@@ -425,11 +422,12 @@ impl CDF {
         }
     }
 
+    /// Prints the CDF entries for debugging.
     pub fn print_entries(&self) {
         println!("entries: {:?}", self.entries);
     }
 
-    /// Returns the estimated value corresponding to quantile `p`
+    /// Returns the estimated value corresponding to quantile `p`.
     pub fn query(&self, p: f64) -> f64 {
         // println!("{:?}", self.entries);
         if self.entries.is_empty() {
@@ -456,7 +454,7 @@ impl CDF {
         }
     }
 
-    /// Quantile estimation of value `x` using linear interpolation
+    /// Quantile estimation of value `x` using linear interpolation.
     pub fn quantile_li(&self, x: f64) -> f64 {
         let slice = self.entries.as_slice();
         if slice.is_empty() {
@@ -476,7 +474,7 @@ impl CDF {
         ((a - x) * bq + (x - b) * aq) / (a - b)
     }
 
-    /// Value estimation given quantile `p`, using linear interpolation
+    /// Value estimation given quantile `p`, using linear interpolation.
     pub fn query_li(&self, p: f64) -> f64 {
         let slice = self.entries.as_slice();
         if slice.is_empty() {

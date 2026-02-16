@@ -1,4 +1,4 @@
-use crate::{CommonHeap, KeepLargest, LASTSTATE, SketchInput, hash_it_to_64};
+use crate::{CANONICAL_HASH_SEED, CommonHeap, KeepLargest, SketchInput, hash64_seeded};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ impl KMV {
     }
 
     pub fn insert(&mut self, item: &SketchInput) {
-        let hashed = hash_it_to_64(LASTSTATE, item);
+        let hashed = hash64_seeded(CANONICAL_HASH_SEED, item);
         self.insert_by_hash(hashed);
     }
 

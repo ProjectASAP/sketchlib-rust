@@ -1,24 +1,50 @@
 use super::Chapter;
-use crate::SketchInput;
+use crate::{KLL, SketchInput};
+
+pub trait EhSketch: Clone {
+    fn insert(&mut self, val: &SketchInput);
+    fn merge(&mut self, other: &Self) -> Result<(), String>;
+}
+
+impl EhSketch for Chapter {
+    fn insert(&mut self, val: &SketchInput) {
+        self.insert(val);
+    }
+
+    fn merge(&mut self, other: &Self) -> Result<(), String> {
+        Chapter::merge(self, other).map_err(|err| err.to_string())
+    }
+}
+
+impl EhSketch for KLL {
+    fn insert(&mut self, val: &SketchInput) {
+        let _ = self.update(val);
+    }
+
+    fn merge(&mut self, other: &Self) -> Result<(), String> {
+        KLL::merge(self, other);
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
-pub struct EHVolume<'bucket> {
-    pub volume: Chapter<'bucket>,
+pub struct EHVolume<T: EhSketch> {
+    pub volume: T,
     pub size: usize,
     pub min_time: u64,
     pub max_time: u64,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExponentialHistogram<'bucket> {
-    pub payload: Vec<EHVolume<'bucket>>,
+pub struct ExponentialHistogram<T: EhSketch> {
+    pub payload: Vec<EHVolume<T>>,
     pub window: u64,
     pub k: usize,
-    pub type_to_clone: Chapter<'bucket>,
+    pub type_to_clone: T,
 }
 
-impl<'bucket> EHVolume<'bucket> {
-    pub fn to_merge(&mut self, other: EHVolume<'bucket>) {
+impl<T: EhSketch> EHVolume<T> {
+    pub fn to_merge(&mut self, other: EHVolume<T>) {
         let _ = self.volume.merge(&other.volume);
         self.size += other.size;
         self.max_time = self.max_time.max(other.max_time);
@@ -26,8 +52,8 @@ impl<'bucket> EHVolume<'bucket> {
     }
 }
 
-impl<'bucket> ExponentialHistogram<'bucket> {
-    pub fn new(k: usize, window: u64, eh_type: Chapter<'bucket>) -> Self {
+impl<T: EhSketch> ExponentialHistogram<T> {
+    pub fn new(k: usize, window: u64, eh_type: T) -> Self {
         ExponentialHistogram {
             payload: Vec::new(),
             window,
@@ -40,7 +66,16 @@ impl<'bucket> ExponentialHistogram<'bucket> {
         self.window = window;
     }
 
-    pub fn update(&mut self, time: u64, val: &SketchInput<'bucket>) {
+    pub fn update(&mut self, time: u64, val: &SketchInput) {
+        self.update_with(time, |sketch| {
+            sketch.insert(val);
+        });
+    }
+
+    pub fn update_with<F>(&mut self, time: u64, update_fn: F)
+    where
+        F: FnOnce(&mut T),
+    {
         let expired_count = self
             .payload
             .iter()
@@ -51,12 +86,10 @@ impl<'bucket> ExponentialHistogram<'bucket> {
             self.payload.drain(0..expired_count);
         }
 
+        let mut sketch = self.type_to_clone.clone();
+        update_fn(&mut sketch);
         let new_eh_vol = EHVolume {
-            volume: {
-                let mut sk = self.type_to_clone.clone();
-                sk.insert(val);
-                sk
-            },
+            volume: sketch,
             size: 1,
             min_time: time,
             max_time: time,
@@ -134,7 +167,7 @@ impl<'bucket> ExponentialHistogram<'bucket> {
         self.payload.len()
     }
 
-    pub fn query_interval_merge(&self, t1: u64, t2: u64) -> Option<Chapter<'bucket>> {
+    pub fn query_interval_merge(&self, t1: u64, t2: u64) -> Option<T> {
         if self.payload.is_empty() {
             return None;
         }
@@ -202,8 +235,11 @@ mod tests {
 
     #[test]
     fn test_new_exponential_histogram() {
-        let eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 1000, Chapter::HLL(crate::HllDf::default()));
+        let eh = ExponentialHistogram::new(
+            2,
+            1000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
         assert_eq!(eh.k, 2);
         assert_eq!(eh.window, 1000);
         assert_eq!(eh.volume_count(), 0);
@@ -211,8 +247,11 @@ mod tests {
 
     #[test]
     fn test_basic_insertion() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 1000, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            1000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         eh.update(100, &SketchInput::I64(1));
 
@@ -223,8 +262,11 @@ mod tests {
 
     #[test]
     fn test_window_expiration() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 100, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            100,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         for i in 0..5 {
             eh.update(i * 30, &SketchInput::U64(i));
@@ -246,8 +288,11 @@ mod tests {
 
     #[test]
     fn test_volume_merging() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 100, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            100,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         for i in 0..10 {
             eh.update(i * 10, &SketchInput::U64(i));
@@ -261,8 +306,11 @@ mod tests {
 
     #[test]
     fn test_cover_functionality() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 1000, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            1000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         // Insert value at times 100, 200, 300
         for i in 1..=3 {
@@ -280,8 +328,11 @@ mod tests {
 
     #[test]
     fn test_update_window() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 1000, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            1000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
         assert_eq!(eh.window, 1000);
 
         eh.update_window(2000);
@@ -290,8 +341,11 @@ mod tests {
 
     #[test]
     fn test_query_interval_merge() {
-        let mut eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 10000, Chapter::HLL(crate::HllDf::default()));
+        let mut eh = ExponentialHistogram::new(
+            2,
+            10000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         // Insert with some data
         for i in 0..5 {
@@ -308,8 +362,11 @@ mod tests {
 
     #[test]
     fn test_empty_histogram() {
-        let eh: ExponentialHistogram =
-            ExponentialHistogram::new(2, 1000, Chapter::HLL(crate::HllDf::default()));
+        let eh = ExponentialHistogram::new(
+            2,
+            1000,
+            Chapter::HLL(crate::HyperLogLog::<crate::DataFusion>::default()),
+        );
 
         assert_eq!(eh.volume_count(), 0);
         assert_eq!(eh.get_min_time(), None);

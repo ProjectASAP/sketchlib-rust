@@ -1,4 +1,4 @@
-use crate::{LASTSTATE, SketchInput, hash_it};
+use crate::{CANONICAL_HASH_SEED, SketchInput, hash64_seeded};
 
 use super::{CountMin, RegularPath};
 use crate::Vector2D;
@@ -76,8 +76,8 @@ impl Elastic {
     }
 
     pub fn insert(&mut self, id: String) {
-        // let hash = hash_it(LASTSTATE, &id);
-        let hash = hash_it(LASTSTATE, &SketchInput::String(id.clone()));
+        // let hash = hash64_seeded(CANONICAL_HASH_SEED, &id);
+        let hash = hash64_seeded(CANONICAL_HASH_SEED, &SketchInput::String(id.clone()));
         let idx = hash as usize % self.bktlen as usize;
         let heavy_bkt = &mut self.heavy[idx];
         if heavy_bkt.flow_id.is_empty() && heavy_bkt.vote_neg == 0 && heavy_bkt.vote_pos == 0 {
@@ -105,8 +105,8 @@ impl Elastic {
     }
 
     pub fn query(&mut self, id: String) -> i32 {
-        // let hash = hash_it(LASTSTATE, &id);
-        let hash = hash_it(LASTSTATE, &SketchInput::String(id.clone()));
+        // let hash = hash64_seeded(CANONICAL_HASH_SEED, &id);
+        let hash = hash64_seeded(CANONICAL_HASH_SEED, &SketchInput::String(id.clone()));
         let idx = hash as usize % self.bktlen as usize;
         let heavy_bkt = &self.heavy[idx];
         if id == heavy_bkt.flow_id {
@@ -128,10 +128,10 @@ impl Elastic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LASTSTATE, SketchInput, hash_it};
+    use crate::{CANONICAL_HASH_SEED, SketchInput, hash64_seeded};
 
     fn bucket_for(id: &str, sketch: &Elastic) -> usize {
-        let hash = hash_it(LASTSTATE, &SketchInput::String(id.to_string()));
+        let hash = hash64_seeded(CANONICAL_HASH_SEED, &SketchInput::String(id.to_string()));
         hash as usize % sketch.bktlen as usize
     }
 

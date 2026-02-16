@@ -1,5 +1,5 @@
 use crate::HHHeap;
-use crate::{SketchInput, hash_it};
+use crate::{SketchInput, hash64_seeded};
 use crate::{Vector1D, Vector2D};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -27,7 +27,7 @@ impl LocherSketch {
 
     pub fn insert(&mut self, e: &str, _v: u64) {
         for i in 0..self.r {
-            let idx = hash_it(i, &SketchInput::String(e.to_owned())) as usize % self.l;
+            let idx = hash64_seeded(i, &SketchInput::String(e.to_owned())) as usize % self.l;
             let cell = &mut self.rows[i][idx];
             let before = match cell.find(&SketchInput::Str(e)) {
                 Some(heap_idx) => cell.heap()[heap_idx].count,
@@ -49,7 +49,7 @@ impl LocherSketch {
     pub fn estimate(&self, e: &str) -> f64 {
         let mut per_row = Vec::with_capacity(self.r);
         for i in 0..self.r {
-            let idx = hash_it(i, &SketchInput::Str(e)) as usize % self.l;
+            let idx = hash64_seeded(i, &SketchInput::Str(e)) as usize % self.l;
             // let est = self.rows[i][idx].find(e).unwrap_or(0);
             let est = match self.rows[i][idx].find(&SketchInput::Str(e)) {
                 Some(v) => self.rows[i][idx].heap()[v].count,
