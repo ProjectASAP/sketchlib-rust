@@ -43,8 +43,7 @@ where
     fn insert_ex(&mut self, input: &NodeInsert<'_>) -> Result<(), &'static str> {
         match input {
             NodeInsert::Eh { time, value } => {
-                self.eh.update(*time, value);
-                Ok(())
+                self.eh.update(*time, value).map_err(|_| "EH update failed")
             }
             _ => Err("Input type not supported by EH node"),
         }
