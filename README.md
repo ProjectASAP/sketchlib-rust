@@ -809,6 +809,34 @@ To build new sketch with the Common API, check [this](./docs/common_api.md)
 - Format sources with `cargo fmt` before committing changes.
 - Lint with `cargo clippy --all-targets --all-features` to catch obvious mistakes across sketches and orchestration layers.
 
+## Contributors
+
+<table>
+  <tr>
+    <td align="center" style="padding: 15px;">
+      <a href="https://github.com/GordonYuanyc">
+        <img src="https://github.com/GordonYuanyc.png" width="100px;" alt="GordonYuanyc"/><br />
+      </a>
+      <strong style="font-size: 16px;">Yancheng Yuan</strong><br />
+      <sub><a href="https://github.com/GordonYuanyc">GitHub</a></sub>
+    </td>
+    <td align="center" style="padding: 15px;">
+      <a href="https://github.com/zzylol">
+        <img src="https://github.com/zzylol.png" width="100px;" alt="zzylol"/><br />
+      </a>
+      <strong style="font-size: 16px;">Zeying Zhu</strong><br />
+      <sub><a href="https://github.com/zzylol">GitHub</a></sub>
+    </td>
+    <td align="center" style="padding: 15px;">
+      <a href="https://github.com/SrinathRamachandran">
+        <img src="https://github.com/SrinathRamachandran.png" width="100px;" alt="SrinathRamachandran"/><br />
+      </a>
+      <strong style="font-size: 16px;">Srinath Ramachandran</strong><br />
+      <sub><a href="https://github.com/SrinathRamachandran">GitHub</a></sub>
+    </td>
+  </tr>
+</table>
+
 ## License
 
 Copyright 2025 ProjectASAP
