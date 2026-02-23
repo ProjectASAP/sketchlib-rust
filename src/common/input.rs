@@ -306,7 +306,7 @@ pub enum HydraQuery<'a> {
     L1Norm,
     L2Norm,
     Entropy,
-    // whether adding rank needs mroe consideration
+    // whether adding rank needs more consideration
     // Rank(f64),
 }
 

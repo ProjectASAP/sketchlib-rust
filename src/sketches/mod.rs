@@ -20,10 +20,6 @@ pub use elastic::HeavyBucket;
 
 pub mod hll;
 pub use hll::{DataFusion, HyperLogLog, HyperLogLogHIP, Regular};
-// pub use hll::HLL;
-// pub use hll::HLLDataFusion;
-// pub use hll::HLLHIP;
-// pub use hll::HllDfModified;
 
 pub mod kll;
 pub use kll::KLL;

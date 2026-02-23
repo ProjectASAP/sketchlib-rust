@@ -50,7 +50,7 @@ impl CocoBucket {
         self.full_key = Some(key.to_string());
     }
 
-    // apparently, this is far less than finish
+    /// Checks if partial_key is a substring of the stored full key.
     pub fn is_partial_key(&mut self, partial_key: &str) -> bool {
         match &self.full_key {
             Some(full) => full.contains(partial_key),
@@ -111,7 +111,6 @@ impl Coco {
         }
     }
 
-    // oh, unfinished again!
     pub fn insert(&mut self, key: &str, v: u64) {
         if self.d == 0 || self.w == 0 {
             return;

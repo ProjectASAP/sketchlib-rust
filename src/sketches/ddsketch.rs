@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// DDSketch implementation based on:
 /// https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
 
-// Mumber of buckets to grow by when expanding.
+// Number of buckets to grow by when expanding.
 const GROW_CHUNK: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ impl Buckets {
             }
         }
 
-        // TThis is the method that gets called only on rare expansions
+        // This is the method that gets called only on rare expansions
         self.ensure(k);
         let idx = (k - self.offset) as usize;
         self.counts.as_mut_slice()[idx] += 1;

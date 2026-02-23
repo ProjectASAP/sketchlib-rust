@@ -31,6 +31,8 @@ This document provides a high-level overview of implemented and planned features
 - **CountMin** - Frequency estimation with fast paths (2-3x speedup)
 - **Count & CountL2HH** - Count sketch with L2 heavy hitter support
 - **HyperLogLog** - Three variants (Regular, DataFusion, HIP) for cardinality estimation
+- **DDSketch** - Quantile estimation with relative error guarantees
+- **KLL** - Quantile estimation with mergeable compactors
 - All built on optimized common structures
 
 ### Frameworks
@@ -47,6 +49,10 @@ This document provides a high-level overview of implemented and planned features
 ✅ **Chapter** - Unified sketch enum for insert/merge/query across sketch types
 
 ✅ **ExponentialHistogram** - Sliding window coordinator for mergeable sketches
+
+✅ **EHUnivOptimized** - Hybrid two-tier ExponentialHistogram for UnivMon with sketch memory reuse
+
+✅ **UnivMonPyramid** - Two-tier sketch dimensions with `UnivSketchPool` for optimized insert and memory management
 
 ✅ **Orchestrator** - Node-level manager for sketches and frameworks (EH/HashLayer/Nitro)
 
@@ -92,7 +98,7 @@ This document provides a high-level overview of implemented and planned features
 🚧 **Automated test coverage**
 
 - Needs more unit test
-- Needs strict **correcness** test
+- Needs strict **correctness** test
 
 ### Documentation
 

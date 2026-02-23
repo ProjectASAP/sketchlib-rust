@@ -10,7 +10,6 @@
   - Complete Migration: Hydra, UnivMon
 - **Optimization**: integrated into sketches implementation
   - More detail about optimization techniques/features can be found in: [features](./docs/features.md)
-  - Benchmark related information can be found in: [benchmark](./docs/benchmark.md)
 
 ## API Overview
 
@@ -100,22 +99,26 @@ println!("L2 norm: {}", l2_norm);
 **Variants:**
 
 - `Frequency(SketchInput)` - Query the frequency/count of a specific item (for CountMin, Count, etc.)
-- `Quantile(f64)` - Query the CDF at a threshold value (for KLL, DDSketch, etc.)
+- `Quantile(f64)` - Query the quantile at a threshold value (for KLL, DDSketch, etc.)
+- `Cdf(f64)` - Query cumulative distribution up to a threshold value
 - `Cardinality` - Query the number of distinct elements (for HyperLogLog, etc.)
+- `L1Norm` - Query L1 norm (for UnivMon)
+- `L2Norm` - Query L2 norm (for UnivMon)
+- `Entropy` - Query Shannon entropy (for UnivMon)
 
 Example usage:
 
 ```rust
 use sketchlib_rust::common::input::{HydraQuery, HydraCounter};
-use sketchlib_rust::{Hydra, HllDf, SketchInput};
+use sketchlib_rust::{Hydra, DataFusion, HyperLogLog, SketchInput};
 
 // Create Hydra with HyperLogLog for cardinality queries
-let hll_template = HydraCounter::HLL(HllDf::new());
+let hll_template = HydraCounter::HLL(HyperLogLog::<DataFusion>::new());
 let mut hydra = Hydra::with_dimensions(3, 128, hll_template);
 
 // Insert data
 for id in 0..1000 {
-    hydra.update("region=us-west", &SketchInput::U64(id));
+    hydra.update("region=us-west", &SketchInput::U64(id), None);
 }
 
 // Query cardinality
@@ -123,60 +126,47 @@ let card = hydra.query_key(vec!["region=us-west"], &HydraQuery::Cardinality);
 println!("distinct count: {}", card);
 ```
 
-#### AnySketch
-
-`AnySketch` is an enum that wraps different sketch types into a unified interface, enabling hash-once-use-many optimization patterns. It's primarily used by `HashLayer` to coordinate multiple sketches efficiently. **No need** to use `AnySketch` without `HashLayer`.
-
-**Variants:**
-
-- `CountMin(CountMin)` - Count-Min Sketch for frequency estimation
-- `Count(Count)` - Count Sketch for unbiased frequency estimation
-- `HllDf(HllDf)` - HyperLogLog for cardinality estimation
-
-**Methods:**
-
-- `insert(&mut self, val: &SketchInput)` - Insert a value using SketchInput
-- `insert_with_hash(&mut self, hash_value: u128)` - Insert using pre-computed hash (optimization)
-- `query(&self, key: &SketchInput) -> Result<f64, &'static str>` - Query using SketchInput
-- `query_with_hash(&self, hash_value: u128) -> Result<f64, &'static str>` - Query using pre-computed hash
-- `merge(&mut self, other: &AnySketch) -> Result<(), &'static str>` - Merge sketches of same type
-- `sketch_type(&self) -> &'static str` - Get sketch type name
-
 #### HydraCounter
 
 `HydraCounter` is an enum that wraps different sketch types for use within Hydra's multi-dimensional framework. Each variant supports specific query types.
 
 **Variants:**
 
-- `CM(CountMin)` - Count-Min Sketch for frequency queries
-- `HLL(HllDf)` - HyperLogLog for cardinality queries
+- `CM(CountMin<Vector2D<i32>, FastPath>)` - Count-Min Sketch for frequency queries
+- `HLL(HyperLogLog<DataFusion>)` - HyperLogLog for cardinality queries
+- `CS(Count<Vector2D<i32>, FastPath>)` - Count Sketch for frequency queries
+- `KLL(KLL)` - KLL for quantile/CDF queries
+- `UNIVERSAL(UnivMon)` - UnivMon for L1, L2, entropy, cardinality queries
 
 **Methods:**
 
-- `insert(&mut self, value: &SketchInput)` - Inserts a value into the underlying sketch
+- `insert(&mut self, value: &SketchInput, count: Option<i32>)` - Inserts a value into the underlying sketch
 - `query(&self, query: &HydraQuery) -> Result<f64, String>` - Queries the sketch; returns error if query type is incompatible
 - `merge(&mut self, other: &HydraCounter) -> Result<(), String>` - Merges another counter; returns error if types differ
 
 **Query Compatibility Matrix:**
 
-| Sketch Type | Frequency | Quantile | Cardinality |
-|-------------|-----------|----------|-------------|
-| CM          | ✓         | ✗        | ✗           |
-| HLL         | ✗         | ✗        | ✓           |
+| Sketch Type | Frequency | Quantile | Cdf | Cardinality | L1/L2/Entropy |
+|-------------|-----------|----------|-----|-------------|---------------|
+| CM          | yes       |          |     |             |               |
+| CS          | yes       |          |     |             |               |
+| HLL         |           |          |     | yes         |               |
+| KLL         |           | yes      | yes |             |               |
+| UNIVERSAL   |           |          |     | yes         | yes           |
 
 Example usage:
 
 ```rust
 use sketchlib_rust::common::input::{HydraCounter, HydraQuery};
-use sketchlib_rust::{CountMin, SketchInput};
+use sketchlib_rust::{CountMin, FastPath, SketchInput, Vector2D};
 
 // Create a CountMin-based counter
-let mut counter = HydraCounter::CM(CountMin::with_dimensions(3, 64));
+let mut counter = HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
 
 // Insert values
 let key = SketchInput::String("event".into());
-counter.insert(&key);
-counter.insert(&key);
+counter.insert(&key, None);
+counter.insert(&key, None);
 
 // Query frequency (compatible)
 let freq = counter.query(&HydraQuery::Frequency(key)).unwrap();
@@ -185,7 +175,7 @@ println!("frequency: {}", freq);
 // Query cardinality (incompatible - returns error)
 match counter.query(&HydraQuery::Cardinality) {
     Ok(_) => println!("success"),
-    Err(e) => println!("error: {}", e), // "CountMin does not support cardinality queries"
+    Err(e) => println!("error: {}", e),
 }
 ```
 
@@ -197,7 +187,7 @@ This section documents the primary sketch implementations with their initializat
 
 Count-Min Sketch tracks approximate frequencies for keys using a 2D array of counters. It provides probabilistic guarantees on overestimation.
 
-Initialize with default dimensions (3 rows × 4096 columns):
+Initialize with default dimensions (3 rows x 4096 columns):
 
 ```rust
 use sketchlib_rust::CountMin;
@@ -247,7 +237,7 @@ assert_eq!(cms1.estimate(&key), 3);
 
 Count Sketch uses signed counters with hash-based sign determination to provide unbiased frequency estimates via median aggregation.
 
-Initialize with default dimensions (3 rows × 4096 columns):
+Initialize with default dimensions (3 rows x 4096 columns):
 
 ```rust
 use sketchlib_rust::Count;
@@ -294,14 +284,18 @@ println!("merged estimate: {}", merged_est);
 
 #### HyperLogLog (HLL)
 
-HyperLogLog estimates the cardinality (number of distinct elements) in a stream with high accuracy and low memory footprint. Three variants are available: `HyperLogLog` (classic), `HllDf` (improved estimator), and `HllDs` (streaming estimator, non-mergeable).
+HyperLogLog estimates the cardinality (number of distinct elements) in a stream with high accuracy and low memory footprint. Three variants are available:
+
+- `HyperLogLog<Regular>` - Classic HyperLogLog algorithm, mergeable
+- `HyperLogLog<DataFusion>` - Improved Ertl estimator (as used in DataFusion/Redis), mergeable
+- `HyperLogLogHIP` - HIP estimator from Apache DataSketches, **not mergeable** but O(1) query
 
 Initialize with default configuration (14-bit precision, 16384 registers):
 
 ```rust
-use sketchlib_rust::sketches::hll::HllDf;
+use sketchlib_rust::{DataFusion, HyperLogLog};
 
-let mut hll = HllDf::new();
+let mut hll = HyperLogLog::<DataFusion>::new();
 ```
 
 Insert elements to track distinct count:
@@ -317,15 +311,17 @@ for user_id in 0..10_000u64 {
 Query the estimated cardinality:
 
 ```rust
-let cardinality = hll.get_est();
+let cardinality = hll.estimate();
 println!("approximate distinct count: {}", cardinality);
 ```
 
 Merge two HyperLogLog sketches:
 
 ```rust
-let mut hll1 = HllDf::new();
-let mut hll2 = HllDf::new();
+use sketchlib_rust::{DataFusion, HyperLogLog, SketchInput};
+
+let mut hll1 = HyperLogLog::<DataFusion>::new();
+let mut hll2 = HyperLogLog::<DataFusion>::new();
 
 for i in 0..5_000u64 {
     hll1.insert(&SketchInput::U64(i));
@@ -335,7 +331,7 @@ for i in 2_500..7_500u64 {
 }
 
 hll1.merge(&hll2);
-let total_distinct = hll1.get_est();
+let total_distinct = hll1.estimate();
 println!("merged cardinality: {}", total_distinct);
 ```
 
@@ -345,25 +341,21 @@ println!("merged cardinality: {}", total_distinct);
 
 UnivMon provides a multi-layer pyramid structure for computing frequency moments (L1, L2, cardinality, entropy) over streams using Count Sketch layers and heavy-hitter tracking.
 
-Initialize with custom parameters (k=heap size, rows, columns, layers, pool_idx):
+Initialize with custom parameters (heap_size, sketch_rows, sketch_cols, layer_size):
 
 ```rust
-use sketchlib_rust::sketch_framework::univmon::UnivMon;
+use sketchlib_rust::UnivMon;
 
-let mut univmon = UnivMon::init_univmon(32, 3, 1024, 4, 0);
+let mut univmon = UnivMon::init_univmon(32, 3, 1024, 4);
 ```
 
-Insert items with their bottom layer (determined by hash):
+Insert items (hashing and layer assignment are handled internally):
 
 ```rust
-use sketchlib_rust::{BOTTOM_LAYER_FINDER, SketchInput, hash_it};
+use sketchlib_rust::SketchInput;
 
-let key = "flow::123";
-let input = SketchInput::Str(key);
-let hash = hash_it(BOTTOM_LAYER_FINDER, &input);
-let bottom_layer = univmon.find_bottom_layer_num(hash, univmon.layer);
-
-univmon.update(key, 1, bottom_layer);
+let key = SketchInput::Str("flow::123");
+univmon.insert(&key, 1);
 ```
 
 Query various statistics:
@@ -382,34 +374,26 @@ println!("entropy: {}", entropy);
 Merge two UnivMon sketches (must have identical structure):
 
 ```rust
-let mut um1 = UnivMon::init_univmon(32, 3, 1024, 4, 0);
-let mut um2 = UnivMon::init_univmon(32, 3, 1024, 4, 0);
+use sketchlib_rust::{UnivMon, SketchInput};
 
-// Insert data into both
-let key1 = "flow_a";
-let input1 = SketchInput::Str(key1);
-let hash1 = hash_it(BOTTOM_LAYER_FINDER, &input1);
-let bottom1 = um1.find_bottom_layer_num(hash1, um1.layer);
-um1.update(key1, 10, bottom1);
+let mut um1 = UnivMon::init_univmon(32, 3, 1024, 4);
+let mut um2 = UnivMon::init_univmon(32, 3, 1024, 4);
 
-let key2 = "flow_b";
-let input2 = SketchInput::Str(key2);
-let hash2 = hash_it(BOTTOM_LAYER_FINDER, &input2);
-let bottom2 = um2.find_bottom_layer_num(hash2, um2.layer);
-um2.update(key2, 15, bottom2);
+um1.insert(&SketchInput::Str("flow_a"), 10);
+um2.insert(&SketchInput::Str("flow_b"), 15);
 
-um1.merge_with(&um2);
+um1.merge(&um2);
 println!("merged L1: {}", um1.calc_l1());
 ```
 
 #### HashLayer
 
-HashLayer provides a performance optimization for managing multiple sketches by computing hash values once and reusing them across all sketches. This is particularly beneficial when you need to update 3-5 sketches simultaneously.
+HashLayer provides a performance optimization for managing multiple sketches by computing hash values once and reusing them across all sketches. It uses `OrchestratedSketch` from the orchestrator module.
 
-Initialize with default sketches (CountMin, Count, HllDf):
+Initialize with default sketches (CountMin, Count, HyperLogLog):
 
 ```rust
-use sketchlib_rust::sketch_framework::hashlayer::HashLayer;
+use sketchlib_rust::HashLayer;
 
 let mut layer = HashLayer::default();
 ```
@@ -417,14 +401,23 @@ let mut layer = HashLayer::default();
 Or create with custom sketch configuration:
 
 ```rust
-use sketchlib_rust::input::AnySketch;
-use sketchlib_rust::{CountMin, Count};
+use sketchlib_rust::{
+    CountMin, Count, DataFusion, FastPath, FreqSketch, HashLayer,
+    HyperLogLog, OrchestratedSketch, CardinalitySketch, Vector2D,
+};
 
 let sketches = vec![
-    AnySketch::CountMin(CountMin::with_dimensions(5, 2048)),
-    AnySketch::Count(Count::with_dimensions(5, 2048)),
+    OrchestratedSketch::Freq(FreqSketch::CountMin(
+        CountMin::<Vector2D<i32>, FastPath>::default(),
+    )),
+    OrchestratedSketch::Freq(FreqSketch::Count(
+        Count::<Vector2D<i32>, FastPath>::default(),
+    )),
+    OrchestratedSketch::Cardinality(CardinalitySketch::HllDf(
+        HyperLogLog::<DataFusion>::default(),
+    )),
 ];
-let mut layer = HashLayer::new(sketches);
+let mut layer = HashLayer::new(sketches).unwrap();
 ```
 
 Insert to all sketches with hash computed once:
@@ -453,12 +446,6 @@ let estimate = layer.query_at(0, &input).unwrap();  // Query sketch at index 0
 println!("estimate from sketch 0: {}", estimate);
 ```
 
-**Performance Benefits:**
-
-- 26-32% faster than separate insertions for 3 sketches (see [benchmark.md](./docs/benchmark.md))
-- Query with pre-computed hash is ~72% faster
-- Most effective with 3-5 sketch pairs
-
 #### Hydra
 
 Hydra coordinates multi-dimensional queries by maintaining sketches for all label combinations. It accepts semicolon-delimited keys and automatically fans updates across subpopulations.
@@ -466,11 +453,10 @@ Hydra coordinates multi-dimensional queries by maintaining sketches for all labe
 Initialize with sketch template (uses CountMin by default):
 
 ```rust
-use sketchlib_rust::Hydra;
-use sketchlib_rust::CountMin;
+use sketchlib_rust::{Hydra, CountMin, FastPath, Vector2D};
 use sketchlib_rust::common::input::HydraCounter;
 
-let template = HydraCounter::CM(CountMin::with_dimensions(3, 64));
+let template = HydraCounter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
 let mut hydra = Hydra::with_dimensions(3, 128, template);
 ```
 
@@ -480,7 +466,7 @@ Insert with multi-dimensional keys (**semicolon-separated**):
 use sketchlib_rust::SketchInput;
 
 let value = SketchInput::String("error".into());
-hydra.update("service=api;route=/users;status=500", &value);
+hydra.update("service=api;route=/users;status=500", &value, None);
 ```
 
 Query specific label combinations:
@@ -498,16 +484,16 @@ println!("all api errors: {}", service_total);
 Hydra with HyperLogLog for cardinality queries:
 
 ```rust
-use sketchlib_rust::HllDf;
+use sketchlib_rust::{DataFusion, HyperLogLog, SketchInput};
 use sketchlib_rust::common::input::{HydraCounter, HydraQuery};
 
-let hll_template = HydraCounter::HLL(HllDf::new());
+let hll_template = HydraCounter::HLL(HyperLogLog::<DataFusion>::new());
 let mut hydra = Hydra::with_dimensions(5, 128, hll_template);
 
 // Insert user IDs with labels
 for user_id in 0..1000 {
     let value = SketchInput::U64(user_id);
-    hydra.update("region=us-west;device=mobile", &value);
+    hydra.update("region=us-west;device=mobile", &value, None);
 }
 
 // Query distinct users by region
@@ -519,57 +505,59 @@ println!("distinct users in us-west: {}", cardinality);
 
 The library includes additional specialized sketches. Each follows a consistent lifecycle: construct, insert, query, and optionally merge.
 
-#### KLL (quantile CDF)
-
-Prepare two KLL sketches.
+#### KLL (quantile estimation)
 
 ```rust
-use sketchlib_rust::sketches::kll::KLL;
+use sketchlib_rust::{KLL, SketchInput};
 
 let mut sketch = KLL::init_kll(200);
 let mut peer = KLL::init_kll(200);
 ```
 
-Stream values into each sketch.
+Stream values into each sketch:
 
 ```rust
 for sample in [12.0, 18.0, 21.0, 35.0, 42.0] {
-    sketch.update(sample);
+    sketch.update(&SketchInput::F64(sample)).unwrap();
 }
 for sample in [30.0, 33.0, 38.0] {
-    peer.update(sample);
+    peer.update(&SketchInput::F64(sample)).unwrap();
 }
 ```
 
-Merge the peer CDF into the primary.
+Merge the peer into the primary:
 
 ```rust
 sketch.merge(&peer);
 ```
 
-Query the cumulative distribution for a threshold.
+Query quantiles (argument is a rank in [0, 1]):
 
 ```rust
-let cdf = sketch.quantile(32.0);
-println!("fraction of samples <= 32 ≈ {cdf:.3}");
+let median = sketch.quantile(0.5);
+println!("median value ≈ {median:.3}");
 ```
 
-### DDSketch (relative-error quantiles, mergeable)
+Or use the CDF interface for value-based queries:
 
-
-DDSketch provides approximate quantile estimation with configurable relative error guarantees. It is useful for summarizing distributions such as latencies or value-heavy metrics where accurate high-percentile estimation is required. This implementation follows the DDSketch design from the original paper and integrates cleanly with the library's common structures.
-
-
-### Initialization
 ```rust
-use sketchlib_rust::sketches::ddsketch::DDSketch;
+let cdf = sketch.cdf();
+let fraction = cdf.quantile(32.0);  // fraction of values <= 32
+println!("fraction of samples <= 32 ≈ {fraction:.3}");
+```
+
+#### DDSketch (relative-error quantiles, mergeable)
+
+DDSketch provides approximate quantile estimation with configurable relative error guarantees.
+
+```rust
+use sketchlib_rust::DDSketch;
 
 // alpha is the relative error bound
 let mut dds = DDSketch::new(0.01);
 ```
 
-
-### Insertion
+Insertion:
 
 ```rust
 dds.add(1.0);
@@ -577,16 +565,16 @@ dds.add(5.2);
 dds.add(42.0);
 ```
 
+Quantile queries:
 
-### Quantile Queries
 ```rust
 let p50 = dds.get_value_at_quantile(0.50).unwrap();
 let p90 = dds.get_value_at_quantile(0.90).unwrap();
 let p99 = dds.get_value_at_quantile(0.99).unwrap();
 ```
 
-### Merge
-Two DDSketch instances may be merged if they share the same `alpha`.
+Merge (two DDSketch instances must share the same `alpha`):
+
 ```rust
 let mut a = DDSketch::new(0.01);
 let mut b = DDSketch::new(0.01);
@@ -630,25 +618,24 @@ println!("heavy flow estimate = {heavy}, light flow estimate = {light}");
 Allocate primary and secondary Coco tables.
 
 ```rust
-use sketchlib_rust::sketches::{coco::Coco, utils::SketchInput};
+use sketchlib_rust::{Coco, SketchInput};
 
 let mut coco = Coco::init_with_size(64, 4);
 let mut shard = Coco::init_with_size(64, 4);
-let key = SketchInput::String("region=us-west|id=42".into());
 ```
 
 Insert weighted updates for composite keys.
 
 ```rust
-coco.insert(&key, 5);
-coco.insert(&key, 1);
-shard.insert(&SketchInput::String("region=us-west|id=13".into()), 3);
+coco.insert("region=us-west|id=42", 5);
+coco.insert("region=us-west|id=42", 1);
+shard.insert("region=us-west|id=13", 3);
 ```
 
 Estimate using substring matches.
 
 ```rust
-let regional = coco.estimate(SketchInput::Str("us-west"));
+let regional = coco.estimate("us-west");
 println!("regional count ≈ {}", regional);
 ```
 
@@ -687,16 +674,26 @@ println!("heavy estimate ≈ {}", sketch.estimate(&key));
 
 `Chapter` wraps each sketch in a single enum so callers can build pipelines without matching on individual types. The enum normalizes `insert`, `merge`, and `query` across the different sketches and returns helpful errors when an operation is not supported.
 
+**Variants:**
+
+- `CM(CountMin<Vector2D<i32>, FastPath>)` - Count-Min Sketch
+- `CS(Count<Vector2D<i32>, FastPath>)` - Count Sketch
+- `COUNTL2HH(CountL2HH)` - Count Sketch with L2 heavy hitters
+- `HLL(HyperLogLog<DataFusion>)` - HyperLogLog
+- `KLL(KLL)` - KLL quantile sketch
+- `DDS(DDSketch)` - DDSketch quantile sketch
+- `COCO(Coco)` - Coco substring aggregation
+- `ELASTIC(Elastic)` - Elastic heavy/light split
+- `UNIFORM(UniformSampling)` - Uniform reservoir sampling
+- `UNIVMON(UnivMon)` - UnivMon universal monitoring
+
 Construct two `Chapter` wrappers over Count-Min sketches.
 
 ```rust
-use sketchlib_rust::{
-    sketchbook::Chapter,
-    sketches::{countmin::CountMin, utils::SketchInput},
-};
+use sketchlib_rust::{Chapter, CountMin, FastPath, Vector2D, SketchInput};
 
-let mut counts = Chapter::CM(CountMin::default());
-let mut canary = Chapter::CM(CountMin::default());
+let mut counts = Chapter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
+let mut canary = Chapter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
 let key = SketchInput::String("endpoint=/search".into());
 ```
 
@@ -720,20 +717,16 @@ let estimate = counts.query(&key)?;
 println!("merged chapter estimate = {estimate}");
 ```
 
-When the underlying sketch does not implement an operation (for example, Locher lacks merge support today), `Chapter::merge` returns an error explaining the mismatch.
+When the underlying sketch does not implement an operation, `Chapter::merge` returns an error explaining the mismatch.
 
 ### Exponential Histogram: Time-bounded aggregates
 
 Initialize the windowed coordinator with a sketch template.
 
 ```rust
-use sketchlib_rust::{
-    sketchbook::{Chapter, ExponentialHistogram},
-    sketches::countmin::CountMin,
-    SketchInput,
-};
+use sketchlib_rust::{Chapter, ExponentialHistogram, CountMin, FastPath, Vector2D, SketchInput};
 
-let template = Chapter::CM(CountMin::default());
+let template = Chapter::CM(CountMin::<Vector2D<i32>, FastPath>::default());
 let mut eh = ExponentialHistogram::new(3, 120, template);
 ```
 
@@ -765,36 +758,39 @@ At this moment, ```cargo test``` is a good starting point.
 ### Core Modules
 
 - **`src/common/`** - Foundation for all sketches ([common_api.md](./docs/common_api.md))
-  - `input.rs` - `SketchInput` enum, `HHItem`, framework enums (`HydraCounter`, `L2HH`, `HydraQuery`)
-  - `structures.rs` - High-performance data structures (`Vector1D`, `Vector2D`, `Vector3D`, `CommonHeap`)
+  - `input.rs` - `SketchInput` enum, `HeapItem`, `HHItem`, framework enums (`HydraCounter`, `L2HH`, `HydraQuery`)
+  - `structures/` - High-performance data structures (`Vector1D`, `Vector2D`, `Vector3D`, `CommonHeap`, `MatrixStorage`, `FixedMatrix`)
   - `heap.rs` - `HHHeap` convenience wrapper for heavy hitter tracking
-  - Hashing utilities (`hash_it`, `SEEDLIST`) for deterministic sketch operations
+  - `hash.rs` - Hashing utilities (`hash_for_matrix`, `hash64_seeded`, `SEEDLIST`, `BOTTOM_LAYER_FINDER`) for deterministic sketch operations
+  - `mode.rs` - `RegularPath` / `FastPath` type-level insert/estimate path selection
 
 - **`src/sketches/`** - Core sketch implementations ([sketch_api.md](./docs/sketch_api.md))
-  - ✅ **Recommended** (built on common structures): `countmin.rs`, `count.rs`, `hll.rs`
-  - ⚠️ **Legacy**: `coco.rs`, `elastic.rs`, `kll.rs`, `uniform.rs`, `microscope.rs`, `locher.rs`
-  - `structured/` - Migration zone for sketches adopting common API
+  - **Recommended** (built on common structures): `countmin.rs`, `count.rs`, `hll.rs`
+  - **Additional**: `ddsketch.rs`, `kll.rs`, `kmv.rs`
+  - **Legacy**: `coco.rs`, `elastic.rs`, `uniform.rs`, `microscope.rs`, `locher.rs`
 
 - **`src/sketch_framework/`** - Orchestration and serving layers
   - `chapter.rs` - Unified interface (`Chapter` enum) wrapping all sketch types
   - `hashlayer.rs` - Hash-once-use-many optimization for multiple sketches
-  - `hydra.rs` - Multi-dimensional hierarchical heavy hitters
+  - `hydra.rs` - Multi-dimensional hierarchical heavy hitters (includes `MultiHeadHydra`)
   - `univmon.rs` - Universal monitoring (L1, L2, entropy, cardinality)
+  - `univmon_optimized.rs` - `UnivMonPyramid` and `UnivSketchPool` for two-tier sketch dimensions
   - `eh.rs` - Exponential histogram for sliding window queries
+  - `eh_univ_optimized.rs` - `EHUnivOptimized` for optimized EH+UnivMon combination
+  - `nitro.rs` - `NitroBatch` batch-mode sampling wrapper
+  - `orchestrator/` - Node-level manager for sketches and frameworks (EH/HashLayer/Nitro nodes)
 
 ### Testing & Benchmarking
 
 - **`benches/`** - Criterion-based performance benchmarks
-  - Run with: `cargo bench --bench structured_countmin`
+  - Run with: `cargo bench`
 
 ### Documentation
 
-- **`docs/`** - Comprehensive API and feature documentation
+- **`docs/`** - API and feature documentation
   - [sketch_api.md](./docs/sketch_api.md) - Complete sketch API reference with usage examples
   - [common_api.md](./docs/common_api.md) - Data structures and shared utilities
   - [features.md](./docs/features.md) - Feature status and roadmap
-  - [benchmark.md](./docs/benchmark.md) - Performance testing methodology
-  - [timeline.md](./docs/timeline.md) - Development history
 
 ### Legacy/Experimental
 
@@ -810,18 +806,3 @@ To build new sketch with the Common API, check [this](./docs/common_api.md)
 
 - Format sources with `cargo fmt` before committing changes.
 - Lint with `cargo clippy --all-targets --all-features` to catch obvious mistakes across sketches and orchestration layers.
-<!-- - Run targeted binaries such as `cargo run --bin cm_test` when iterating on a specific sketch. -->
-<!-- - Regenerate serialized fixtures via the serializer binaries whenever sketch layouts change. -->
-
-<!-- ## Status & Next Steps
-
-- Early-stage code: APIs may change, and several sketches are still being tuned for accuracy.
-- Some components (for example Elastic merges or Hydra's public update surface) remain works in progress.
-- Cross-language support currently targets PromSketch and Go; extend the deserializers if new consumers appear.
-- Contributions and experiment results are welcome—open an issue describing the workload or sketch you plan to add.
-- Missing many testing
-- Missing many serialization and deserialization support -->
-
-## Future Update TimeLine
-
-For planned future update, please check [timeline.md](./docs/timeline.md) for more detail.

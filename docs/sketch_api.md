@@ -18,10 +18,13 @@ frameworks). Additional sketches are **⚠️ legacy/experimental** and may have
 - **NitroBatch** - Batch-mode sampling wrapper for sketches
 - **Orchestrator** - Node-level manager for sketches and frameworks
 
-### Legacy / Experimental Sketches
+### Additional Sketches
 
 - **KLL** - Quantile estimation with mergeable compactors
 - **DDSketch** - Quantile estimation with relative error guarantees
+
+### Legacy / Experimental Sketches
+
 - **Elastic** - Heavy/light split CMS
 - **Coco** - Substring aggregation
 - **Locher** - Heavy hitter sampling

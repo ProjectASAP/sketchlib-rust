@@ -37,7 +37,7 @@ src/common/
     ├── vector3d.rs         # Vector3D implementation
     ├── matrix_storage.rs   # MatrixStorage trait
     ├── fixed_structure.rs  # FixedMatrix implementation
-    └── heap.rs             # CommonHeap, CommonHeapOrder, CommonMinHeap, CommonMaxHeap
+    └── heap.rs             # CommonHeap, CommonHeapOrder, KeepSmallest, KeepLargest
 ```
 
 **Public exports:**
@@ -46,12 +46,15 @@ src/common/
 use sketchlib_rust::common::{
     // Input types
     SketchInput, HeapItem, HHItem,
-    L2HH, input_to_owned,
+    L2HH, input_to_owned, heap_item_to_sketch_input,
 
     // Data structures
     Vector1D, Vector2D, Vector3D,
-    MatrixStorage, FixedMatrix,
-    CommonHeap, CommonHeapOrder, CommonMinHeap, CommonMaxHeap,
+    MatrixStorage, FastPathHasher, MatrixHashType,
+    FixedMatrix, HllBucketList,
+    DefaultMatrixI32, DefaultMatrixI64, DefaultMatrixI128,
+    QuickMatrixI32, QuickMatrixI64, QuickMatrixI128,
+    CommonHeap, CommonHeapOrder, KeepSmallest, KeepLargest,
     HHHeap,
 
     // Hash functions
@@ -261,29 +264,40 @@ Trait bound for matrix-backed sketches (CountMin/Count). It enforces the
 hash width and fast-path operations at the type level.
 
 ```rust
-pub trait MatrixStorage<T: Clone> {
+pub trait MatrixStorage {
+    type Counter: Clone;
     type HashValueType;
     fn rows(&self) -> usize;
     fn cols(&self) -> usize;
 
     fn update_one_counter<F, V>(&mut self, row: usize, col: usize, op: F, value: V)
-        where F: Fn(&mut T, V);
-    fn increment_by_row(&mut self, row: usize, col: usize, value: T);
+        where F: Fn(&mut Self::Counter, V);
+    fn increment_by_row(&mut self, row: usize, col: usize, value: Self::Counter);
 
-    fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: Self::HashValueType)
-        where F: Fn(&mut T, &V, usize), V: Clone;
-    fn fast_query_min<F, R>(&self, hashed_val: Self::HashValueType, op: F) -> R
-        where F: Fn(&T, usize, Self::HashValueType) -> R, R: Ord;
-    fn fast_query_median<F>(&self, hashed_val: Self::HashValueType, op: F) -> f64
-        where F: Fn(&T, usize, Self::HashValueType) -> f64;
-    fn query_one_counter(&self, row: usize, col: usize) -> T;
+    fn fast_insert<F, V>(&mut self, op: F, value: V, hashed_val: &Self::HashValueType)
+        where F: Fn(&mut Self::Counter, &V, usize), V: Clone;
+    fn fast_query_min<F, R>(&self, hashed_val: &Self::HashValueType, op: F) -> R
+        where F: Fn(&Self::Counter, usize, &Self::HashValueType) -> R, R: Ord;
+    fn fast_query_median<F>(&self, hashed_val: &Self::HashValueType, op: F) -> f64
+        where F: Fn(&Self::Counter, usize, &Self::HashValueType) -> f64;
+    fn query_one_counter(&self, row: usize, col: usize) -> Self::Counter;
+}
+```
+
+**FastPathHasher** extends `MatrixStorage` with hash computation:
+
+```rust
+pub trait FastPathHasher: MatrixStorage {
+    fn hash_for_matrix(&self, value: &SketchInput) -> Self::HashValueType;
 }
 ```
 
 **Implementations:**
 
-- `Vector2D<i32>`: flexible dimensions, `HashValueType = MatrixHashType`
-- `FixedMatrix`: fixed 5 × 2048, `HashValueType = u64`
+- `Vector2D<i32>`: flexible dimensions, `Counter = i32`, `HashValueType = MatrixHashType`
+- `FixedMatrix` (`QuickMatrixI32`): fixed 5 × 2048, `Counter = i32`, `HashValueType = u64`
+- `DefaultMatrixI32`: fixed 3 × 4096, `Counter = i32`, `HashValueType = u64`
+- Also available: `DefaultMatrixI64`, `DefaultMatrixI128`, `QuickMatrixI64`, `QuickMatrixI128`
 
 ### Vector2D
 
@@ -378,7 +392,7 @@ fn get_nitro_skip(&mut self) -> usize
 ### FixedMatrix
 
 Fixed-size `i32` matrix optimized for quickstart CountMin/Count with fixed
-dimensions. Implements `MatrixStorage<i32>` with `HashValueType = u64`.
+dimensions. Implements `MatrixStorage` with `Counter = i32` and `HashValueType = u64`.
 
 ```rust
 pub struct FixedMatrix {
@@ -432,8 +446,8 @@ pub struct CommonHeap<T, O: CommonHeapOrder<T>> {
 
 ```rust
 fn with_capacity(capacity: usize, order: O) -> Self
-fn new_min(capacity: usize) -> CommonHeap<T, CommonMinHeap>
-fn new_max(capacity: usize) -> CommonHeap<T, CommonMaxHeap>
+fn new_min(capacity: usize) -> CommonHeap<T, KeepSmallest>
+fn new_max(capacity: usize) -> CommonHeap<T, KeepLargest>
 ```
 
 **Core methods:**
@@ -464,8 +478,8 @@ pub trait CommonHeapOrder<T> {
 
 **Built-in orderings:**
 
-- `CommonMinHeap` - Smallest values at root
-- `CommonMaxHeap` - Largest values at root
+- `KeepSmallest` - Smallest values at root
+- `KeepLargest` - Largest values at root
 
 ---
 
@@ -519,7 +533,7 @@ Specialized wrapper around `CommonHeap` for top-K heavy hitter tracking with fas
 
 ```rust
 pub struct HHHeap {
-    heap: CommonHeap<HHItem, CommonMinHeap>,
+    heap: CommonHeap<HHItem, KeepSmallest>,
     positions: HashMap<u64, Vec<(HeapItem, usize)>>,  // Fast lookup by hash
     k: usize,
 }
