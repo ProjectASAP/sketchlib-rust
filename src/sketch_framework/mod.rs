@@ -39,5 +39,5 @@ pub use eh_univ_optimized::{
 
 pub mod tumbling;
 pub use tumbling::{
-    FoldCMSConfig, FoldCSConfig, KLLConfig, SketchPool, TumblingSketch, TumblingWindow,
+    FoldCMSConfig, FoldCSConfig, KLLConfig, SketchPool, TumblingWindowSketch, TumblingWindow,
 };

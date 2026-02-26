@@ -7,7 +7,7 @@
 //!
 //! # Supported sketch types
 //!
-//! Any type implementing [`TumblingSketch`] can be used. Built-in
+//! Any type implementing [`TumblingWindowSketch`] can be used. Built-in
 //! implementations are provided for [`FoldCMS`], [`FoldCS`], and [`KLL`].
 
 use crate::fold_cms::FoldCMS;
@@ -16,15 +16,15 @@ use crate::kll::KLL;
 use crate::SketchInput;
 
 // ---------------------------------------------------------------------------
-// TumblingSketch trait
+// TumblingWindowSketch trait
 // ---------------------------------------------------------------------------
 
 /// Trait unifying insert / merge / clear / construct for pool and tumbling
 /// window manager use.
 ///
-/// The `tw_` prefix avoids collision with existing method names on the
+/// The `tumbling_` prefix avoids collision with existing method names on the
 /// underlying sketch types.
-pub trait TumblingSketch: Clone + Sized {
+pub trait TumblingWindowSketch: Clone + Sized {
     /// Configuration sufficient to construct a fresh instance.
     type Config: Clone;
 
@@ -32,20 +32,20 @@ pub trait TumblingSketch: Clone + Sized {
     fn from_config(config: &Self::Config) -> Self;
 
     /// Insert one observation.
-    fn tw_insert(&mut self, key: &SketchInput, value: i64);
+    fn tumbling_insert(&mut self, key: &SketchInput, value: i64);
 
     /// Merge `other` into `self`.
-    fn tw_merge(&mut self, other: &Self);
+    fn tumbling_merge(&mut self, other: &Self);
 
     /// Reset to the empty state, preserving allocations where possible.
-    fn tw_clear(&mut self);
+    fn tumbling_clear(&mut self);
 }
 
 // ---------------------------------------------------------------------------
 // Config structs
 // ---------------------------------------------------------------------------
 
-/// Configuration for constructing a [`FoldCMS`] via [`TumblingSketch`].
+/// Configuration for constructing a [`FoldCMS`] via [`TumblingWindowSketch`].
 #[derive(Clone, Debug)]
 pub struct FoldCMSConfig {
     pub rows: usize,
@@ -54,7 +54,7 @@ pub struct FoldCMSConfig {
     pub top_k: usize,
 }
 
-/// Configuration for constructing a [`FoldCS`] via [`TumblingSketch`].
+/// Configuration for constructing a [`FoldCS`] via [`TumblingWindowSketch`].
 #[derive(Clone, Debug)]
 pub struct FoldCSConfig {
     pub rows: usize,
@@ -63,7 +63,7 @@ pub struct FoldCSConfig {
     pub top_k: usize,
 }
 
-/// Configuration for constructing a [`KLL`] via [`TumblingSketch`].
+/// Configuration for constructing a [`KLL`] via [`TumblingWindowSketch`].
 #[derive(Clone, Debug)]
 pub struct KLLConfig {
     pub k: usize,
@@ -71,66 +71,66 @@ pub struct KLLConfig {
 }
 
 // ---------------------------------------------------------------------------
-// TumblingSketch impls
+// TumblingWindowSketch impls
 // ---------------------------------------------------------------------------
 
-impl TumblingSketch for FoldCMS {
+impl TumblingWindowSketch for FoldCMS {
     type Config = FoldCMSConfig;
 
     fn from_config(config: &Self::Config) -> Self {
         FoldCMS::new(config.rows, config.full_cols, config.fold_level, config.top_k)
     }
 
-    fn tw_insert(&mut self, key: &SketchInput, value: i64) {
+    fn tumbling_insert(&mut self, key: &SketchInput, value: i64) {
         self.insert(key, value);
     }
 
-    fn tw_merge(&mut self, other: &Self) {
+    fn tumbling_merge(&mut self, other: &Self) {
         self.merge_same_level(other);
     }
 
-    fn tw_clear(&mut self) {
+    fn tumbling_clear(&mut self) {
         self.clear();
     }
 }
 
-impl TumblingSketch for FoldCS {
+impl TumblingWindowSketch for FoldCS {
     type Config = FoldCSConfig;
 
     fn from_config(config: &Self::Config) -> Self {
         FoldCS::new(config.rows, config.full_cols, config.fold_level, config.top_k)
     }
 
-    fn tw_insert(&mut self, key: &SketchInput, value: i64) {
+    fn tumbling_insert(&mut self, key: &SketchInput, value: i64) {
         self.insert(key, value);
     }
 
-    fn tw_merge(&mut self, other: &Self) {
+    fn tumbling_merge(&mut self, other: &Self) {
         self.merge_same_level(other);
     }
 
-    fn tw_clear(&mut self) {
+    fn tumbling_clear(&mut self) {
         self.clear();
     }
 }
 
-impl TumblingSketch for KLL {
+impl TumblingWindowSketch for KLL {
     type Config = KLLConfig;
 
     fn from_config(config: &Self::Config) -> Self {
         KLL::init(config.k, config.m)
     }
 
-    fn tw_insert(&mut self, key: &SketchInput, _value: i64) {
+    fn tumbling_insert(&mut self, key: &SketchInput, _value: i64) {
         // KLL is a quantile sketch — each call is one observation.
         let _ = self.update(key);
     }
 
-    fn tw_merge(&mut self, other: &Self) {
+    fn tumbling_merge(&mut self, other: &Self) {
         self.merge(other);
     }
 
-    fn tw_clear(&mut self) {
+    fn tumbling_clear(&mut self) {
         self.clear();
     }
 }
@@ -139,14 +139,14 @@ impl TumblingSketch for KLL {
 // SketchPool
 // ---------------------------------------------------------------------------
 
-/// Generic object pool that recycles sketch instances via [`TumblingSketch::tw_clear`].
-pub struct SketchPool<S: TumblingSketch> {
+/// Generic object pool that recycles sketch instances via [`TumblingWindowSketch::tumbling_clear`].
+pub struct SketchPool<S: TumblingWindowSketch> {
     free_list: Vec<S>,
     total_allocated: usize,
     config: S::Config,
 }
 
-impl<S: TumblingSketch> SketchPool<S> {
+impl<S: TumblingWindowSketch> SketchPool<S> {
     /// Create a pool and pre-allocate `cap` sketches.
     pub fn new(cap: usize, config: S::Config) -> Self {
         let mut free_list = Vec::with_capacity(cap);
@@ -172,7 +172,7 @@ impl<S: TumblingSketch> SketchPool<S> {
 
     /// Return a sketch to the pool after clearing it.
     pub fn put(&mut self, mut sketch: S) {
-        sketch.tw_clear();
+        sketch.tumbling_clear();
         self.free_list.push(sketch);
     }
 
@@ -192,7 +192,7 @@ impl<S: TumblingSketch> SketchPool<S> {
 // ---------------------------------------------------------------------------
 
 /// A closed (immutable) tumbling window with its sketch and metadata.
-struct ClosedWindow<S: TumblingSketch> {
+struct ClosedWindow<S: TumblingWindowSketch> {
     sketch: S,
     _window_id: u64,
 }
@@ -205,7 +205,7 @@ struct ClosedWindow<S: TumblingSketch> {
 /// type `S`. Each window collects items for `window_size` time units, then
 /// closes. At most `max_windows` closed windows are retained; older ones
 /// are evicted and their sketches returned to the pool.
-pub struct TumblingWindow<S: TumblingSketch> {
+pub struct TumblingWindow<S: TumblingWindowSketch> {
     /// Currently open window's sketch.
     active: S,
     /// Sequential counter for window IDs.
@@ -222,7 +222,7 @@ pub struct TumblingWindow<S: TumblingSketch> {
     pool: SketchPool<S>,
 }
 
-impl<S: TumblingSketch> TumblingWindow<S> {
+impl<S: TumblingWindowSketch> TumblingWindow<S> {
     /// Create a new tumbling window manager.
     ///
     /// * `window_size` — duration of each window in abstract time units.
@@ -253,7 +253,7 @@ impl<S: TumblingSketch> TumblingWindow<S> {
         while time >= self.active_start + self.window_size {
             self.close_active();
         }
-        self.active.tw_insert(key, value);
+        self.active.tumbling_insert(key, value);
     }
 
     /// Force-close the active window at `current_time` and open a fresh one.
@@ -286,7 +286,7 @@ impl<S: TumblingSketch> TumblingWindow<S> {
     pub fn query_all(&self) -> S {
         let mut merged = self.active.clone();
         for cw in &self.closed {
-            merged.tw_merge(&cw.sketch);
+            merged.tumbling_merge(&cw.sketch);
         }
         merged
     }
@@ -298,7 +298,7 @@ impl<S: TumblingSketch> TumblingWindow<S> {
         let mut merged = self.active.clone();
         let start = self.closed.len().saturating_sub(n);
         for cw in &self.closed[start..] {
-            merged.tw_merge(&cw.sketch);
+            merged.tumbling_merge(&cw.sketch);
         }
         merged
     }
@@ -896,13 +896,13 @@ mod tests {
         let stream = sample_zipf_u64(domain, exponent, total_samples, 0xF1A7_CAFE);
 
         // Build two identical tumbling window instances.
-        let mut tw_flat: TumblingWindow<FoldCMS> = TumblingWindow::new(
+        let mut tumbling_flat: TumblingWindow<FoldCMS> = TumblingWindow::new(
             samples_per_window as u64,
             num_windows,
             config.clone(),
             num_windows + 2,
         );
-        let mut tw_hier: TumblingWindow<FoldCMS> = TumblingWindow::new(
+        let mut tumbling_hier: TumblingWindow<FoldCMS> = TumblingWindow::new(
             samples_per_window as u64,
             num_windows,
             config,
@@ -913,13 +913,13 @@ mod tests {
         for (i, &value) in stream.iter().enumerate() {
             let t = i as u64;
             let key = SketchInput::U64(value);
-            tw_flat.insert(t, &key, 1);
-            tw_hier.insert(t, &key, 1);
+            tumbling_flat.insert(t, &key, 1);
+            tumbling_hier.insert(t, &key, 1);
             *truth.entry(value).or_insert(0) += 1;
         }
 
-        let merged_flat = tw_flat.query_all();
-        let merged_hier = tw_hier.query_all_hierarchical();
+        let merged_flat = tumbling_flat.query_all();
+        let merged_hier = tumbling_hier.query_all_hierarchical();
 
         // Hierarchical merge should reach fold_level 0.
         assert_eq!(
