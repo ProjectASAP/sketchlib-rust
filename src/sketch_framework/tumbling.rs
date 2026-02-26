@@ -1400,4 +1400,680 @@ mod tests {
             "only {recall_pct:.0}% of true top-{top_k} found in heap (expected >= 80%)"
         );
     }
+
+    // -- Gap 1: FoldCS query_recent accuracy ---------------------------------
+
+    #[test]
+    fn fold_cs_tumbling_query_recent_accuracy() {
+        let rows = 5;
+        let full_cols = 4096;
+        let fold_level = 4;
+        let top_k = 20;
+        let domain = 5000;
+        let exponent = 1.1;
+        let total_windows = 6;
+        let recent_n = 3;
+        let samples_per_window = 10_000;
+
+        let config = FoldCSConfig {
+            rows,
+            full_cols,
+            fold_level,
+            top_k,
+        };
+        let mut tw: TumblingWindow<FoldCS> = TumblingWindow::new(
+            samples_per_window as u64,
+            total_windows,
+            config,
+            total_windows + 2,
+        );
+
+        let stream = sample_zipf_u64(
+            domain,
+            exponent,
+            samples_per_window * total_windows,
+            0xC5_0A01,
+        );
+
+        let mut per_window_truth: Vec<HashMap<u64, i64>> = Vec::new();
+        for w in 0..total_windows {
+            let mut window_truth = HashMap::<u64, i64>::new();
+            let start = w * samples_per_window;
+            let end = start + samples_per_window;
+            for i in start..end {
+                let value = stream[i];
+                tw.insert(i as u64, &SketchInput::U64(value), 1);
+                *window_truth.entry(value).or_insert(0) += 1;
+            }
+            per_window_truth.push(window_truth);
+        }
+
+        // query_recent(3) → 3 most recent closed + active.
+        // After 6 windows: windows 0..4 closed, window 5 active.
+        // recent(3) → closed[2,3,4] + active(5) = windows 2,3,4,5.
+        let recent_start = total_windows - recent_n - 1;
+        let mut recent_truth = HashMap::<u64, i64>::new();
+        for w in recent_start..total_windows {
+            for (&key, &count) in &per_window_truth[w] {
+                *recent_truth.entry(key).or_insert(0) += count;
+            }
+        }
+
+        let merged = tw.query_recent(recent_n);
+
+        // CS error bound: epsilon = sqrt(e / cols), bound = epsilon * L2
+        let epsilon = (std::f64::consts::E / full_cols as f64).sqrt();
+        let l2_norm: f64 = recent_truth
+            .values()
+            .map(|&c| (c as f64) * (c as f64))
+            .sum::<f64>()
+            .sqrt();
+        let error_bound = epsilon * l2_norm;
+
+        let mut within = 0usize;
+        for (&key, &true_count) in &recent_truth {
+            let est = merged.query(&SketchInput::U64(key));
+            if ((est - true_count).abs() as f64) <= error_bound {
+                within += 1;
+            }
+        }
+        let pct = within as f64 / recent_truth.len() as f64 * 100.0;
+        eprintln!(
+            "[fold_cs_tumbling_query_recent_accuracy] pct_within_bound={pct:.1}%, \
+             error_bound={error_bound:.2}"
+        );
+        assert!(
+            pct > 90.0,
+            "only {pct:.1}% of recent keys within CS bound (expected > 90%)"
+        );
+
+        // Keys only in excluded windows should have small estimates.
+        let mut excluded_truth = HashMap::<u64, i64>::new();
+        for w in 0..recent_start {
+            for (&key, &count) in &per_window_truth[w] {
+                *excluded_truth.entry(key).or_insert(0) += count;
+            }
+        }
+        for &key in excluded_truth.keys() {
+            if recent_truth.contains_key(&key) {
+                continue;
+            }
+            let est = merged.query(&SketchInput::U64(key));
+            assert!(
+                (est.abs() as f64) <= error_bound,
+                "excluded key {key} estimate {est} exceeds error bound {error_bound:.2}"
+            );
+        }
+    }
+
+    // -- Gap 2: KLL query_recent accuracy ------------------------------------
+
+    #[test]
+    fn kll_tumbling_query_recent_accuracy() {
+        let config = KLLConfig { k: 200, m: 8 };
+        let total_samples = 100_000;
+        let num_windows = 8;
+        let recent_n = 3;
+        let samples_per_window = total_samples / num_windows;
+
+        let mut tw: TumblingWindow<KLL> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config,
+            num_windows + 2,
+        );
+
+        let values = sample_uniform_f64(0.0, 10_000_000.0, total_samples, 0xA11_0072);
+
+        let mut per_window: Vec<Vec<f64>> = Vec::new();
+        for w in 0..num_windows {
+            let start = w * samples_per_window;
+            let end = start + samples_per_window;
+            let window_values: Vec<f64> = values[start..end].to_vec();
+            for (j, &v) in window_values.iter().enumerate() {
+                tw.insert((start + j) as u64, &SketchInput::F64(v), 1);
+            }
+            per_window.push(window_values);
+        }
+
+        // query_recent(3) → 3 most recent closed + active.
+        // After 8 windows: windows 0..6 closed, window 7 active.
+        // recent(3) → closed[4,5,6] + active(7) = windows 4,5,6,7.
+        let recent_start = num_windows - recent_n - 1;
+        let mut recent_values: Vec<f64> = Vec::new();
+        for w in recent_start..num_windows {
+            recent_values.extend_from_slice(&per_window[w]);
+        }
+        recent_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = recent_values.len();
+
+        let merged = tw.query_recent(recent_n);
+        let cdf = merged.cdf();
+
+        let quantiles = [0.10, 0.25, 0.50, 0.75, 0.90];
+        let tolerance = 0.03;
+
+        for &q in &quantiles {
+            let est = cdf.query(q);
+            let lo_idx = (((q - tolerance).max(0.0) * n as f64).ceil() as usize).min(n - 1);
+            let hi_idx = (((q + tolerance).min(1.0) * n as f64).ceil() as usize).min(n - 1);
+            assert!(
+                est >= recent_values[lo_idx] && est <= recent_values[hi_idx],
+                "quantile {q} estimate {est} outside [{}, {}] (rank tolerance {tolerance})",
+                recent_values[lo_idx],
+                recent_values[hi_idx]
+            );
+        }
+    }
+
+    // -- Gap 3: FoldCS heap correctness --------------------------------------
+
+    #[test]
+    fn fold_cs_tumbling_heap_correctness() {
+        let rows = 5;
+        let full_cols = 4096;
+        let fold_level = 4;
+        let top_k = 20;
+        let domain = 10_000;
+        let exponent = 1.3;
+        let total_samples = 200_000;
+        let num_windows = 8;
+        let samples_per_window = total_samples / num_windows;
+
+        let config = FoldCSConfig {
+            rows,
+            full_cols,
+            fold_level,
+            top_k,
+        };
+        let mut tw: TumblingWindow<FoldCS> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config,
+            num_windows + 2,
+        );
+
+        let stream = sample_zipf_u64(domain, exponent, total_samples, 0xC5_4EA9);
+        let mut truth = HashMap::<u64, i64>::new();
+
+        for (i, &value) in stream.iter().enumerate() {
+            tw.insert(i as u64, &SketchInput::U64(value), 1);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+
+        let merged = tw.query_all();
+
+        let mut truth_sorted: Vec<(u64, i64)> = truth.into_iter().collect();
+        truth_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        let true_top_k: Vec<u64> = truth_sorted.iter().take(top_k).map(|&(k, _)| k).collect();
+
+        let heap_entries = merged.heap().heap();
+        assert!(
+            !heap_entries.is_empty(),
+            "heap should not be empty after merging {num_windows} windows"
+        );
+
+        let mut found_in_heap = 0usize;
+        for &true_key in &true_top_k {
+            let in_heap = heap_entries
+                .iter()
+                .any(|item| item.key == crate::HeapItem::U64(true_key));
+            if in_heap {
+                found_in_heap += 1;
+            }
+        }
+
+        let recall_pct = found_in_heap as f64 / top_k as f64 * 100.0;
+        eprintln!(
+            "[fold_cs_tumbling_heap_correctness] heap_size={}, \
+             true_top_k_recall={found_in_heap}/{top_k} ({recall_pct:.0}%)",
+            heap_entries.len()
+        );
+        assert!(
+            recall_pct >= 80.0,
+            "only {recall_pct:.0}% of true top-{top_k} found in heap (expected >= 80%)"
+        );
+    }
+
+    // -- Gap 4: Tumbling vs monolithic degradation ---------------------------
+
+    #[test]
+    fn fold_cms_tumbling_vs_monolithic() {
+        let rows = 3;
+        let full_cols = 4096;
+        let fold_level = 4;
+        let top_k = 20;
+        let domain = 10_000;
+        let exponent = 1.1;
+        let total_samples = 200_000;
+        let num_windows = 8;
+        let samples_per_window = total_samples / num_windows;
+
+        let config = FoldCMSConfig {
+            rows,
+            full_cols,
+            fold_level,
+            top_k,
+        };
+        let mut tw: TumblingWindow<FoldCMS> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config.clone(),
+            num_windows + 2,
+        );
+        let mut mono = FoldCMS::new(rows, full_cols, fold_level, top_k);
+
+        let stream = sample_zipf_u64(domain, exponent, total_samples, 0xDE_AD01);
+        let mut truth = HashMap::<u64, i64>::new();
+
+        for (i, &value) in stream.iter().enumerate() {
+            let key = SketchInput::U64(value);
+            tw.insert(i as u64, &key, 1);
+            mono.insert(&key, 1);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+
+        let merged = tw.query_all();
+
+        let mut tumbling_total_err = 0i64;
+        let mut mono_total_err = 0i64;
+        for (&key, &true_count) in &truth {
+            let sk = SketchInput::U64(key);
+            tumbling_total_err += (merged.query(&sk) - true_count).abs();
+            mono_total_err += (mono.query(&sk) - true_count).abs();
+        }
+
+        let tumbling_mae = tumbling_total_err as f64 / truth.len() as f64;
+        let mono_mae = mono_total_err as f64 / truth.len() as f64;
+        eprintln!(
+            "[fold_cms_tumbling_vs_monolithic] tumbling_mae={tumbling_mae:.2}, \
+             mono_mae={mono_mae:.2}, ratio={:.2}",
+            tumbling_mae / mono_mae.max(1.0)
+        );
+        assert!(
+            tumbling_mae <= mono_mae * 1.5,
+            "tumbling MAE ({tumbling_mae:.2}) > 1.5x monolithic ({mono_mae:.2})"
+        );
+    }
+
+    #[test]
+    fn fold_cs_tumbling_vs_monolithic() {
+        let rows = 5;
+        let full_cols = 4096;
+        let fold_level = 4;
+        let top_k = 20;
+        let domain = 10_000;
+        let exponent = 1.1;
+        let total_samples = 200_000;
+        let num_windows = 8;
+        let samples_per_window = total_samples / num_windows;
+
+        let config = FoldCSConfig {
+            rows,
+            full_cols,
+            fold_level,
+            top_k,
+        };
+        let mut tw: TumblingWindow<FoldCS> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config.clone(),
+            num_windows + 2,
+        );
+        let mut mono = FoldCS::new(rows, full_cols, fold_level, top_k);
+
+        let stream = sample_zipf_u64(domain, exponent, total_samples, 0xDE_AD02);
+        let mut truth = HashMap::<u64, i64>::new();
+
+        for (i, &value) in stream.iter().enumerate() {
+            let key = SketchInput::U64(value);
+            tw.insert(i as u64, &key, 1);
+            mono.insert(&key, 1);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+
+        let merged = tw.query_all();
+
+        let mut tumbling_total_err = 0i64;
+        let mut mono_total_err = 0i64;
+        for (&key, &true_count) in &truth {
+            let sk = SketchInput::U64(key);
+            tumbling_total_err += (merged.query(&sk) - true_count).abs();
+            mono_total_err += (mono.query(&sk) - true_count).abs();
+        }
+
+        let tumbling_mae = tumbling_total_err as f64 / truth.len() as f64;
+        let mono_mae = mono_total_err as f64 / truth.len() as f64;
+        eprintln!(
+            "[fold_cs_tumbling_vs_monolithic] tumbling_mae={tumbling_mae:.2}, \
+             mono_mae={mono_mae:.2}, ratio={:.2}",
+            tumbling_mae / mono_mae.max(1.0)
+        );
+        assert!(
+            tumbling_mae <= mono_mae * 1.5,
+            "tumbling MAE ({tumbling_mae:.2}) > 1.5x monolithic ({mono_mae:.2})"
+        );
+    }
+
+    #[test]
+    fn kll_tumbling_vs_monolithic() {
+        let config = KLLConfig { k: 200, m: 8 };
+        let total_samples = 100_000;
+        let num_windows = 8;
+        let samples_per_window = total_samples / num_windows;
+
+        let mut tw: TumblingWindow<KLL> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config.clone(),
+            num_windows + 2,
+        );
+        let mut mono = KLL::init(config.k, config.m);
+
+        let values = sample_uniform_f64(0.0, 10_000_000.0, total_samples, 0xDE_AD03);
+
+        for (i, &v) in values.iter().enumerate() {
+            tw.insert(i as u64, &SketchInput::F64(v), 1);
+            mono.update(&SketchInput::F64(v)).unwrap();
+        }
+
+        let merged = tw.query_all();
+        let tw_cdf = merged.cdf();
+        let mono_cdf = mono.cdf();
+
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = sorted.len();
+
+        let quantiles = [0.10, 0.25, 0.50, 0.75, 0.90];
+        let mut tw_max_rank_err = 0.0f64;
+        let mut mono_max_rank_err = 0.0f64;
+
+        for &q in &quantiles {
+            let tw_est = tw_cdf.query(q);
+            let mono_est = mono_cdf.query(q);
+
+            // Compute rank error: how far off is the rank of the estimated value?
+            let tw_rank = sorted.partition_point(|&x| x <= tw_est) as f64 / n as f64;
+            let mono_rank = sorted.partition_point(|&x| x <= mono_est) as f64 / n as f64;
+
+            tw_max_rank_err = tw_max_rank_err.max((tw_rank - q).abs());
+            mono_max_rank_err = mono_max_rank_err.max((mono_rank - q).abs());
+        }
+
+        eprintln!(
+            "[kll_tumbling_vs_monolithic] tw_max_rank_err={tw_max_rank_err:.4}, \
+             mono_max_rank_err={mono_max_rank_err:.4}"
+        );
+        assert!(
+            tw_max_rank_err <= mono_max_rank_err + 0.02,
+            "tumbling rank error ({tw_max_rank_err:.4}) > monolithic ({mono_max_rank_err:.4}) + 0.02"
+        );
+    }
+
+    // -- Gap 5: Edge cases ---------------------------------------------------
+
+    #[test]
+    fn tumbling_single_window_accuracy() {
+        // All data fits in one window (no window closes).
+        let total_samples = 50_000;
+
+        // --- FoldCMS subsection ---
+        {
+            let config = FoldCMSConfig {
+                rows: 3,
+                full_cols: 4096,
+                fold_level: 4,
+                top_k: 20,
+            };
+            let mut tw: TumblingWindow<FoldCMS> = TumblingWindow::new(
+                total_samples as u64 + 1, // window_size > total_samples → never closes
+                10,
+                config,
+                4,
+            );
+
+            let stream = sample_zipf_u64(5000, 1.1, total_samples, 0x51_0001);
+            let mut truth = HashMap::<u64, i64>::new();
+            for (i, &value) in stream.iter().enumerate() {
+                tw.insert(i as u64, &SketchInput::U64(value), 1);
+                *truth.entry(value).or_insert(0) += 1;
+            }
+
+            assert_eq!(tw.closed_count(), 0, "no windows should have closed");
+
+            let merged = tw.query_all();
+            let epsilon = std::f64::consts::E / 4096.0;
+            let l1: f64 = truth.values().map(|&c| c as f64).sum();
+            let bound = epsilon * l1;
+
+            let mut within = 0usize;
+            for (&key, &true_count) in &truth {
+                let est = merged.query(&SketchInput::U64(key));
+                if ((est - true_count).abs() as f64) <= bound {
+                    within += 1;
+                }
+            }
+            let pct = within as f64 / truth.len() as f64 * 100.0;
+            assert!(
+                pct > 90.0,
+                "FoldCMS single-window: only {pct:.1}% within bound"
+            );
+        }
+
+        // --- FoldCS subsection ---
+        {
+            let config = FoldCSConfig {
+                rows: 5,
+                full_cols: 4096,
+                fold_level: 4,
+                top_k: 20,
+            };
+            let mut tw: TumblingWindow<FoldCS> = TumblingWindow::new(
+                total_samples as u64 + 1,
+                10,
+                config,
+                4,
+            );
+
+            let stream = sample_zipf_u64(5000, 1.1, total_samples, 0x51_0002);
+            let mut truth = HashMap::<u64, i64>::new();
+            for (i, &value) in stream.iter().enumerate() {
+                tw.insert(i as u64, &SketchInput::U64(value), 1);
+                *truth.entry(value).or_insert(0) += 1;
+            }
+
+            assert_eq!(tw.closed_count(), 0, "no windows should have closed");
+
+            let merged = tw.query_all();
+            let epsilon = (std::f64::consts::E / 4096.0f64).sqrt();
+            let l2: f64 = truth
+                .values()
+                .map(|&c| (c as f64) * (c as f64))
+                .sum::<f64>()
+                .sqrt();
+            let bound = epsilon * l2;
+
+            let mut within = 0usize;
+            for (&key, &true_count) in &truth {
+                let est = merged.query(&SketchInput::U64(key));
+                if ((est - true_count).abs() as f64) <= bound {
+                    within += 1;
+                }
+            }
+            let pct = within as f64 / truth.len() as f64 * 100.0;
+            assert!(
+                pct > 90.0,
+                "FoldCS single-window: only {pct:.1}% within bound"
+            );
+        }
+
+        // --- KLL subsection ---
+        {
+            let config = KLLConfig { k: 200, m: 8 };
+            let mut tw: TumblingWindow<KLL> = TumblingWindow::new(
+                total_samples as u64 + 1,
+                10,
+                config,
+                4,
+            );
+
+            let values = sample_uniform_f64(0.0, 1_000_000.0, total_samples, 0x51_0003);
+            for (i, &v) in values.iter().enumerate() {
+                tw.insert(i as u64, &SketchInput::F64(v), 1);
+            }
+
+            assert_eq!(tw.closed_count(), 0, "no windows should have closed");
+
+            let merged = tw.query_all();
+            let cdf = merged.cdf();
+
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let n = sorted.len();
+
+            for &q in &[0.25, 0.50, 0.75] {
+                let est = cdf.query(q);
+                let lo = (((q - 0.02).max(0.0) * n as f64).ceil() as usize).min(n - 1);
+                let hi = (((q + 0.02).min(1.0) * n as f64).ceil() as usize).min(n - 1);
+                assert!(
+                    est >= sorted[lo] && est <= sorted[hi],
+                    "KLL single-window: quantile {q} est {est} outside [{}, {}]",
+                    sorted[lo],
+                    sorted[hi]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tumbling_very_small_windows() {
+        let window_size = 10u64;
+        let total_samples = 5000;
+        let max_windows = 50;
+
+        // FoldCMS with tiny windows — many rotations.
+        let config = FoldCMSConfig {
+            rows: 3,
+            full_cols: 1024,
+            fold_level: 3,
+            top_k: 10,
+        };
+        let mut tw: TumblingWindow<FoldCMS> = TumblingWindow::new(
+            window_size,
+            max_windows,
+            config,
+            max_windows + 2,
+        );
+
+        let stream = sample_zipf_u64(500, 1.2, total_samples, 0x77_1100);
+
+        for (i, &value) in stream.iter().enumerate() {
+            tw.insert(i as u64, &SketchInput::U64(value), 1);
+        }
+
+        // With 5000 samples and window_size=10, there are 500 windows total.
+        // max_windows=50, so only the last ~50 closed + active are retained.
+        // Just verify the system didn't crash and produces reasonable estimates.
+        let merged = tw.query_all();
+
+        // Build truth for what the tumbling window actually retains.
+        // The retained windows cover the most recent portion of the stream.
+        let total_windows_created = total_samples / window_size as usize;
+        let retained_start_window =
+            total_windows_created.saturating_sub(max_windows);
+        let retained_start_sample = retained_start_window * window_size as usize;
+
+        let mut retained_truth = HashMap::<u64, i64>::new();
+        for i in retained_start_sample..total_samples {
+            *retained_truth.entry(stream[i]).or_insert(0) += 1;
+        }
+
+        let epsilon = std::f64::consts::E / 1024.0;
+        let l1: f64 = retained_truth.values().map(|&c| c as f64).sum();
+        let bound = epsilon * l1;
+
+        let mut within = 0usize;
+        for (&key, &true_count) in &retained_truth {
+            let est = merged.query(&SketchInput::U64(key));
+            if ((est - true_count).abs() as f64) <= bound {
+                within += 1;
+            }
+        }
+        let pct = within as f64 / retained_truth.len() as f64 * 100.0;
+        eprintln!(
+            "[tumbling_very_small_windows] retained_windows={max_windows}, \
+             pct_within_bound={pct:.1}%, bound={bound:.2}"
+        );
+        assert!(
+            pct > 85.0,
+            "only {pct:.1}% within CMS bound with tiny windows (expected > 85%)"
+        );
+    }
+
+    #[test]
+    fn tumbling_skewed_load() {
+        // 5 windows where window 2 gets 90% of data.
+        let rows = 3;
+        let full_cols = 4096;
+        let fold_level = 4;
+        let top_k = 20;
+        let num_windows = 5;
+        let light_samples = 1_000;
+        let heavy_samples = 36_000; // window 2 gets ~90% of 40k total
+        let samples_per_window = 10_000; // large enough that light samples fit in one window
+
+        let config = FoldCMSConfig {
+            rows,
+            full_cols,
+            fold_level,
+            top_k,
+        };
+        let mut tw: TumblingWindow<FoldCMS> = TumblingWindow::new(
+            samples_per_window as u64,
+            num_windows,
+            config,
+            num_windows + 2,
+        );
+
+        let domain = 5000;
+        let exponent = 1.1;
+        let mut truth = HashMap::<u64, i64>::new();
+        let mut time = 0u64;
+
+        for w in 0..num_windows {
+            let n_samples = if w == 2 { heavy_samples } else { light_samples };
+            let stream = sample_zipf_u64(domain, exponent, n_samples, 0xBE_EF00 + w as u64);
+            for &value in &stream {
+                tw.insert(time, &SketchInput::U64(value), 1);
+                *truth.entry(value).or_insert(0) += 1;
+                time += 1;
+            }
+            // Advance time to next window boundary.
+            let next_boundary = ((time / samples_per_window as u64) + 1) * samples_per_window as u64;
+            time = next_boundary;
+        }
+
+        let merged = tw.query_all();
+
+        let epsilon = std::f64::consts::E / full_cols as f64;
+        let l1: f64 = truth.values().map(|&c| c as f64).sum();
+        let bound = epsilon * l1;
+
+        let mut within = 0usize;
+        for (&key, &true_count) in &truth {
+            let est = merged.query(&SketchInput::U64(key));
+            if ((est - true_count).abs() as f64) <= bound {
+                within += 1;
+            }
+        }
+        let pct = within as f64 / truth.len() as f64 * 100.0;
+        eprintln!(
+            "[tumbling_skewed_load] pct_within_bound={pct:.1}%, bound={bound:.2}"
+        );
+        assert!(
+            pct > 90.0,
+            "only {pct:.1}% within CMS bound with skewed load (expected > 90%)"
+        );
+    }
 }
