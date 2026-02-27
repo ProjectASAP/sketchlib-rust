@@ -41,6 +41,9 @@ use rmp_serde::{
 };
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+use std::hash::{Hash, Hasher};
+use base64::Engine as _;
+use serde_json::json;
 
 /// The greater is P, the smaller the error.
 const HLL_P: usize = 14_usize;
@@ -123,6 +126,28 @@ impl<Variant> HyperLogLog<Variant> {
                 *reg = other_val;
             }
         }
+    }
+
+    /// Serializes the sketch to JSON format.
+    /// The sketch data is base64-encoded MessagePack.
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, RmpEncodeError> {
+        let bytes = self.serialize_to_bytes()?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(json!({
+            "sketch": b64
+        }))
+    }
+
+    /// Deserializes a sketch from JSON format.
+    /// Expects a JSON object with base64-encoded "sketch" field.
+    pub fn deserialize_from_json(
+        data: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let sketch_b64 = data["sketch"]
+            .as_str()
+            .ok_or("Missing 'sketch' field in JSON")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(sketch_b64)?;
+        Ok(Self::deserialize_from_bytes(&bytes)?)
     }
 }
 
@@ -325,7 +350,34 @@ impl HyperLogLogHIP {
             self.insert(item);
         }
     }
+
+    /// Inserts a value that implements Hash without wrapping in SketchInput.
+    /// Convenience method for inserting any hashable type.
+    pub fn insert_value<T: Hash>(&mut self, value: &T) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.insert_with_hash(hash);
+    }
 }
+
+// Convenience method aliases for specific HyperLogLog variants
+impl HyperLogLog<DataFusion> {
+    /// Alias for `estimate()` that returns u64.
+    /// Provides backward compatibility with asap-internal API.
+    pub fn count(&self) -> u64 {
+        self.estimate() as u64
+    }
+}
+
+impl HyperLogLog<Regular> {
+    /// Alias for `estimate()` that returns u64.
+    /// Provides backward compatibility with asap-internal API.
+    pub fn count(&self) -> u64 {
+        self.estimate() as u64
+    }
+}
+
 #[cfg(test)]
 mod tests {
 

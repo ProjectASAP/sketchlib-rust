@@ -12,6 +12,8 @@ use rand::{Rng, rng};
 use rmp_serde::decode::Error as RmpDecodeError;
 use rmp_serde::encode::Error as RmpEncodeError;
 use serde::{Deserialize, Serialize};
+use base64::Engine as _;
+use serde_json::json;
 
 use crate::common::input::sketch_input_to_f64;
 use crate::{SketchInput, Vector1D};
@@ -503,6 +505,65 @@ impl Cdf {
         let b = slice[idx].value;
         let bq = slice[idx].quantile;
         ((aq - p) * b + (p - bq) * a) / (aq - bq)
+    }
+}
+
+// asap-internal API compatibility
+impl KLL {
+    /// Updates the sketch with a value directly without wrapping in SketchInput.
+    /// Convenience method for inserting f64 values.
+    pub fn update_value(&mut self, value: f64) -> Result<(), &'static str> {
+        self.update(&crate::SketchInput::F64(value))
+    }
+
+    /// Alias for `quantile()` for backward compatibility.
+    /// Returns the value at the given quantile (0.0 to 1.0).
+    pub fn get_quantile(&self, q: f64) -> f64 {
+        self.quantile(q)
+    }
+
+    /// Merges multiple KLL sketches into one.
+    /// All sketches must have the same k parameter.
+    pub fn merge_multiple(sketches: &[&KLL]) -> Result<KLL, &'static str> {
+        if sketches.is_empty() {
+            return Err("Cannot merge empty list of sketches");
+        }
+
+        // Verify all sketches have same k
+        let k = sketches[0].k;
+        for sketch in sketches.iter().skip(1) {
+            if sketch.k != k {
+                return Err("All sketches must have the same k parameter");
+            }
+        }
+
+        // Clone first sketch and merge others into it
+        let mut merged = sketches[0].clone();
+        for sketch in sketches.iter().skip(1) {
+            merged.merge(sketch);
+        }
+        Ok(merged)
+    }
+
+    /// Serializes the sketch to JSON format.
+    /// The sketch data is base64-encoded MessagePack.
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, RmpEncodeError> {
+        let bytes = self.serialize_to_bytes()?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(json!({
+            "sketch": b64,
+            "k": self.k
+        }))
+    }
+
+    /// Deserializes a sketch from JSON format.
+    /// Expects a JSON object with base64-encoded "sketch" field.
+    pub fn deserialize_from_json(data: &serde_json::Value) -> Result<Self, Box<dyn std::error::Error>> {
+        let sketch_b64 = data["sketch"]
+            .as_str()
+            .ok_or("Missing 'sketch' field in JSON")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(sketch_b64)?;
+        Ok(Self::deserialize_from_bytes(&bytes)?)
     }
 }
 

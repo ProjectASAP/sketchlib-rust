@@ -3,6 +3,8 @@ use rmp_serde::{
 };
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+use base64::Engine as _;
+use serde_json::json;
 
 use crate::FastPathHasher;
 use crate::{
@@ -465,6 +467,94 @@ impl NitroTarget for CountMin<Vector2D<i32>, FastPath> {
     fn update_row(&mut self, row: usize, hashed: u128, delta: u64) {
         self.counts
             .update_by_row(row, hashed, |a, b| *a += b, delta as i32);
+    }
+}
+
+// asap-internal API compatibility (RegularPath)
+impl<S: MatrixStorage> CountMin<S, RegularPath>
+where
+    S::Counter: Copy + Ord + From<i32> + std::ops::AddAssign,
+{
+    /// Inserts a value directly without wrapping in SketchInput.
+    /// Convenience method for inserting f64 values.
+    pub fn insert_value(&mut self, value: f64) {
+        self.insert(&SketchInput::F64(value));
+    }
+
+    /// Updates the sketch with a key-value pair.
+    /// The key is converted to a semicolon-separated string internally.
+    /// This increments the count for the given key.
+    pub fn update_key(&mut self, key: &crate::KeyByLabelValues, _value: f64) {
+        let key_str = key.to_string_key();
+        self.insert(&SketchInput::String(key_str));
+    }
+
+    /// Queries the sketch for a specific key.
+    /// Returns the frequency estimate as f64.
+    pub fn query_key(&self, key: &crate::KeyByLabelValues) -> f64
+    where
+        S::Counter: Into<i64>,
+    {
+        let key_str = key.to_string_key();
+        let estimate: i64 = self.estimate(&SketchInput::String(key_str)).into();
+        estimate as f64
+    }
+}
+
+// asap-internal API compatibility (FastPath)
+impl<S> CountMin<S, FastPath>
+where
+    S: MatrixStorage<HashValueType = u64>,
+    S::Counter: Copy + Ord + From<i32> + std::ops::AddAssign,
+{
+    /// Inserts a value directly without wrapping in SketchInput.
+    /// Convenience method for inserting f64 values.
+    pub fn insert_value(&mut self, value: f64) {
+        self.insert(&SketchInput::F64(value));
+    }
+
+    /// Updates the sketch with a key-value pair.
+    /// The key is converted to a semicolon-separated string internally.
+    /// This increments the count for the given key.
+    pub fn update_key(&mut self, key: &crate::KeyByLabelValues, _value: f64) {
+        let key_str = key.to_string_key();
+        self.insert(&SketchInput::String(key_str));
+    }
+
+    /// Queries the sketch for a specific key.
+    /// Returns the frequency estimate as f64.
+    pub fn query_key(&self, key: &crate::KeyByLabelValues) -> f64
+    where
+        S::Counter: Into<i64>,
+    {
+        let key_str = key.to_string_key();
+        let estimate: i64 = self.estimate(&SketchInput::String(key_str)).into();
+        estimate as f64
+    }
+}
+
+// JSON serialization convenience methods (requires Serialize + Deserialize bounds)
+impl<S: MatrixStorage + Serialize + for<'de> Deserialize<'de>, Mode> CountMin<S, Mode> {
+    /// Serializes the sketch to JSON format.
+    /// The sketch data is base64-encoded MessagePack.
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, RmpEncodeError> {
+        let bytes = self.serialize_to_bytes()?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(json!({
+            "sketch": b64,
+            "row_num": self.row,
+            "col_num": self.col
+        }))
+    }
+
+    /// Deserializes a sketch from JSON format.
+    /// Expects a JSON object with base64-encoded "sketch" field.
+    pub fn deserialize_from_json(data: &serde_json::Value) -> Result<Self, Box<dyn std::error::Error>> {
+        let sketch_b64 = data["sketch"]
+            .as_str()
+            .ok_or("Missing 'sketch' field in JSON")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(sketch_b64)?;
+        Ok(Self::deserialize_from_bytes(&bytes)?)
     }
 }
 

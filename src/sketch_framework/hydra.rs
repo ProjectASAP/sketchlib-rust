@@ -3,6 +3,8 @@ use rmp_serde::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use base64::Engine as _;
+use serde_json::json;
 
 use crate::input::{HydraCounter, HydraQuery};
 use crate::{CountMin, FastPath, Vector2D};
@@ -324,6 +326,70 @@ impl MultiHeadHydra {
                     .map(|counter| counter.query(q).unwrap())
                     .unwrap_or(0.0)
             })
+    }
+}
+
+// Casap-internal API compatibility
+impl Hydra {
+    /// Creates a new Hydra sketch with KLL counters.
+    /// This is a convenience constructor that creates the KLL template internally.
+    pub fn new_with_kll(row_num: usize, col_num: usize, k: i32) -> Self {
+        let kll_template = HydraCounter::KLL(crate::KLL::init_kll(k));
+        Self::with_dimensions(row_num, col_num, kll_template)
+    }
+
+    /// Updates the sketch with a KeyByLabelValues key and f64 value.
+    /// The key is converted to a semicolon-separated string internally.
+    pub fn update_with_key(
+        &mut self,
+        key: &crate::KeyByLabelValues,
+        value: f64,
+        count: Option<i32>,
+    ) {
+        let key_str = key.to_string_key();
+        self.update(&key_str, &crate::SketchInput::F64(value), count);
+    }
+
+    /// Queries the sketch for a quantile at the given key.
+    /// Returns the quantile value as f64.
+    pub fn query_key_quantile(&self, key: &crate::KeyByLabelValues, quantile: f64) -> f64 {
+        let key_parts: Vec<&str> = key.labels.iter().map(|s| s.as_str()).collect();
+        self.query_key(key_parts, &crate::input::HydraQuery::Quantile(quantile))
+    }
+
+    /// Queries the sketch for a frequency at the given key.
+    /// Returns the frequency estimate as f64.
+    pub fn query_key_frequency(
+        &self,
+        key: &crate::KeyByLabelValues,
+        value: &crate::SketchInput,
+    ) -> f64 {
+        let key_parts: Vec<&str> = key.labels.iter().map(|s| s.as_str()).collect();
+        self.query_key(key_parts, &crate::input::HydraQuery::Frequency(value.clone()))
+    }
+
+    /// Serializes the sketch to JSON format.
+    /// The sketch data is base64-encoded MessagePack.
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, RmpEncodeError> {
+        let bytes = self.serialize_to_bytes()?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(json!({
+            "sketch": b64,
+            "row_num": self.row_num,
+            "col_num": self.col_num
+        }))
+    }
+
+    /// Deserializes a sketch from JSON format.
+    /// Expects a JSON object with base64-encoded "sketch" field.
+    pub fn deserialize_from_json(
+        data: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let sketch_b64 = data["sketch"]
+            .as_str()
+            .ok_or("Missing 'sketch' field in JSON")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(sketch_b64)?;
+        Ok(Self::deserialize_from_bytes(&bytes)?)
     }
 }
 

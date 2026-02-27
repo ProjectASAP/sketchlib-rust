@@ -1,6 +1,7 @@
 pub mod hash;
 pub mod heap;
 pub mod input;
+pub mod key;
 pub mod precompute_hash;
 pub mod precompute_sample;
 pub mod precompute_sample2;
@@ -14,6 +15,7 @@ pub use hash::{
 };
 pub use heap::HHHeap;
 pub use input::{HHItem, HeapItem, L2HH, SketchInput, heap_item_to_sketch_input, input_to_owned};
+pub use key::KeyByLabelValues;
 pub use precompute_hash::PRECOMPUTED_HASH;
 pub use precompute_sample::PRECOMPUTED_SAMPLE;
 pub use precompute_sample2::PRECOMPUTED_SAMPLE_RATE_1PERCENT;
