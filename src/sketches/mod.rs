@@ -38,6 +38,12 @@ pub use uniform::UniformSampling;
 pub mod ddsketch;
 pub use ddsketch::DDSketch;
 
+pub mod cms_heap;
+pub use cms_heap::CMSHeap;
+
+pub mod cs_heap;
+pub use cs_heap::CSHeap;
+
 pub mod fold_cms;
 pub use fold_cms::{FoldCMS, FoldCell, FoldEntry};
 
