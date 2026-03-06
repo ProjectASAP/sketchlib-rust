@@ -4,11 +4,12 @@
 //! Every insertion updates both the frequency sketch and the heap, mirroring
 //! the pattern used by [`CMSHeap`] but with Count Sketch (median estimator).
 
+use crate::sketches::count::{CountSketchCounter, FastPathSign};
 use crate::{
-    Count, DefaultXxHasher, FastPath, HHHeap, MatrixStorage, RegularPath, SketchHasher,
+    Count, DefaultMatrixI32, DefaultMatrixI64, DefaultMatrixI128, DefaultXxHasher, FastPath,
+    FixedMatrix, HHHeap, MatrixStorage, QuickMatrixI64, QuickMatrixI128, RegularPath, SketchHasher,
     SketchInput, Vector2D, heap_item_to_sketch_input,
 };
-use crate::sketches::count::{CountSketchCounter, FastPathSign};
 
 const DEFAULT_TOP_K: usize = 32;
 
@@ -55,6 +56,10 @@ where
 }
 
 // -- Default impls -----------------------------------------------------------
+//
+// Default is available for Vector2D-backed sketches and fixed-size matrix
+// backends (Quick/Default/Fixed families). Use `from_storage(...)` when you
+// want explicit backend control with a custom `top_k`.
 
 impl Default for CSHeap<Vector2D<i64>, RegularPath> {
     fn default() -> Self {
@@ -77,6 +82,78 @@ impl Default for CSHeap<Vector2D<i32>, RegularPath> {
 impl Default for CSHeap<Vector2D<i32>, FastPath> {
     fn default() -> Self {
         Self::new(3, 4096, DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<FixedMatrix, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(FixedMatrix::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<FixedMatrix, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(FixedMatrix::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI32, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI32::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI32, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI32::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<QuickMatrixI64, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(QuickMatrixI64::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<QuickMatrixI64, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(QuickMatrixI64::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<QuickMatrixI128, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(QuickMatrixI128::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<QuickMatrixI128, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(QuickMatrixI128::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI64, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI64::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI64, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI64::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI128, RegularPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI128::default(), DEFAULT_TOP_K)
+    }
+}
+
+impl Default for CSHeap<DefaultMatrixI128, FastPath> {
+    fn default() -> Self {
+        Self::from_storage(DefaultMatrixI128::default(), DEFAULT_TOP_K)
     }
 }
 
@@ -165,8 +242,16 @@ where
     /// re-queried against the merged sketch to reconcile the top-k heap.
     pub fn merge(&mut self, other: &Self) {
         self.cs.merge(&other.cs);
+        let mut candidate_keys = Vec::with_capacity(self.heap.len() + other.heap.len());
+        for item in self.heap.heap() {
+            candidate_keys.push(item.key.clone());
+        }
         for item in other.heap.heap() {
-            let key_ref = heap_item_to_sketch_input(&item.key);
+            candidate_keys.push(item.key.clone());
+        }
+        self.heap.clear();
+        for key in candidate_keys {
+            let key_ref = heap_item_to_sketch_input(&key);
             let est = self.cs.estimate(&key_ref);
             self.heap.update(&key_ref, est as i64);
         }
@@ -213,8 +298,16 @@ where
     /// Merges another `CSHeap` into `self`.
     pub fn merge(&mut self, other: &Self) {
         self.cs.merge(&other.cs);
+        let mut candidate_keys = Vec::with_capacity(self.heap.len() + other.heap.len());
+        for item in self.heap.heap() {
+            candidate_keys.push(item.key.clone());
+        }
         for item in other.heap.heap() {
-            let key_ref = heap_item_to_sketch_input(&item.key);
+            candidate_keys.push(item.key.clone());
+        }
+        self.heap.clear();
+        for key in candidate_keys {
+            let key_ref = heap_item_to_sketch_input(&key);
             let est = self.cs.estimate(&key_ref);
             self.heap.update(&key_ref, est as i64);
         }
@@ -225,9 +318,74 @@ where
 mod tests {
     use super::*;
     use crate::SketchInput;
+    use crate::test_utils::sample_zipf_u64;
+    use std::collections::{HashMap, HashSet};
+
+    fn heap_count_for_key(heap: &HHHeap, key: &SketchInput) -> Option<i64> {
+        heap.heap()
+            .iter()
+            .find(|item| heap_item_to_sketch_input(&item.key) == *key)
+            .map(|item| item.count)
+    }
+
+    fn run_zipf_stream_regular(
+        rows: usize,
+        cols: usize,
+        top_k: usize,
+        domain: usize,
+        exponent: f64,
+        samples: usize,
+        seed: u64,
+    ) -> (CSHeap<Vector2D<i64>, RegularPath>, HashMap<u64, i64>) {
+        let mut truth = HashMap::<u64, i64>::new();
+        let mut sketch = CSHeap::<Vector2D<i64>, RegularPath>::new(rows, cols, top_k);
+        for value in sample_zipf_u64(domain, exponent, samples, seed) {
+            let key = SketchInput::U64(value);
+            sketch.insert(&key);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+        (sketch, truth)
+    }
+
+    fn run_zipf_stream_fast(
+        rows: usize,
+        cols: usize,
+        top_k: usize,
+        domain: usize,
+        exponent: f64,
+        samples: usize,
+        seed: u64,
+    ) -> (CSHeap<Vector2D<i64>, FastPath>, HashMap<u64, i64>) {
+        let mut truth = HashMap::<u64, i64>::new();
+        let mut sketch = CSHeap::<Vector2D<i64>, FastPath>::new(rows, cols, top_k);
+        for value in sample_zipf_u64(domain, exponent, samples, seed) {
+            let key = SketchInput::U64(value);
+            sketch.insert(&key);
+            *truth.entry(value).or_insert(0) += 1;
+        }
+        (sketch, truth)
+    }
+
+    fn top_k_truth_keys(truth: &HashMap<u64, i64>, k: usize) -> HashSet<u64> {
+        let mut entries: Vec<(u64, i64)> =
+            truth.iter().map(|(key, count)| (*key, *count)).collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries.into_iter().take(k).map(|(key, _)| key).collect()
+    }
+
+    fn top_k_heap_keys(heap: &HHHeap) -> HashSet<u64> {
+        heap.heap()
+            .iter()
+            .map(|item| match heap_item_to_sketch_input(&item.key) {
+                SketchInput::U64(v) => v,
+                other => panic!("expected U64 key in zipf tests, got {other:?}"),
+            })
+            .collect()
+    }
 
     #[test]
     fn insert_and_estimate() {
+        // Verifies single-key inserts update both CS estimate and wrapper behavior.
         let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 256, 10);
         let key = SketchInput::Str("hello");
         for _ in 0..5 {
@@ -238,6 +396,7 @@ mod tests {
 
     #[test]
     fn heap_tracks_top_k() {
+        // Verifies heap retains only the highest-frequency keys under top-k limit.
         let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 1024, 3);
 
         // Insert 5 distinct keys with different frequencies.
@@ -259,6 +418,7 @@ mod tests {
 
     #[test]
     fn merge_reconciles_heaps() {
+        // Verifies merge combines sketches and refreshes heap counts from merged state.
         let mut a = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 256, 5);
         let mut b = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 256, 5);
 
@@ -289,7 +449,91 @@ mod tests {
     }
 
     #[test]
+    fn insert_many_updates_estimate_and_heap() {
+        // Verifies insert_many updates estimate and heap count consistently.
+        let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 4);
+        let key = SketchInput::Str("many");
+        sh.insert_many(&key, 17);
+
+        let estimate = sh.estimate(&key);
+        assert!((estimate - 17.0).abs() < 1e-9);
+        assert_eq!(heap_count_for_key(sh.heap(), &key), Some(estimate as i64));
+    }
+
+    #[test]
+    fn bulk_insert_updates_multiple_keys() {
+        // Verifies bulk stream ingestion updates multiple keys and heap tracking.
+        let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 4);
+        let values = vec![
+            SketchInput::U64(7),
+            SketchInput::U64(8),
+            SketchInput::U64(7),
+            SketchInput::U64(9),
+            SketchInput::U64(7),
+        ];
+        sh.bulk_insert(&values);
+
+        let key = SketchInput::U64(7);
+        assert!((sh.estimate(&key) - 3.0).abs() < 1e-9);
+        assert_eq!(
+            heap_count_for_key(sh.heap(), &key),
+            Some(sh.estimate(&key) as i64)
+        );
+    }
+
+    #[test]
+    fn clear_heap_keeps_cs_counters() {
+        // Verifies clearing heap preserves sketch counters for future updates.
+        let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 2);
+        let key = SketchInput::Str("persist");
+        sh.insert_many(&key, 5);
+
+        sh.clear_heap();
+        assert!(sh.heap().is_empty());
+        assert!((sh.estimate(&key) - 5.0).abs() < 1e-9);
+
+        sh.insert(&key);
+        assert_eq!(
+            heap_count_for_key(sh.heap(), &key),
+            Some(sh.estimate(&key) as i64)
+        );
+    }
+
+    #[test]
+    fn from_storage_uses_storage_dimensions() {
+        // Verifies from_storage keeps backend dimensions and heap capacity.
+        let storage = Vector2D::<i64>::init(4, 128);
+        let sh = CSHeap::<Vector2D<i64>, RegularPath>::from_storage(storage, 9);
+
+        assert_eq!(sh.rows(), 4);
+        assert_eq!(sh.cols(), 128);
+        assert_eq!(sh.heap().capacity(), 9);
+    }
+
+    #[test]
+    fn merge_refreshes_existing_self_heap_entries() {
+        // Verifies merge refreshes pre-existing self heap keys to merged estimates.
+        let mut a = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 2);
+        let mut b = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 1);
+        let a_key = SketchInput::Str("a-key");
+        let c_key = SketchInput::Str("c-key");
+        let b_key = SketchInput::Str("b-key");
+
+        a.insert_many(&a_key, 120);
+        a.insert_many(&c_key, 10);
+
+        b.insert_many(&a_key, 40);
+        b.insert_many(&b_key, 400);
+
+        a.merge(&b);
+
+        let merged_estimate = a.estimate(&a_key) as i64;
+        assert_eq!(heap_count_for_key(a.heap(), &a_key), Some(merged_estimate));
+    }
+
+    #[test]
     fn fast_path_insert_and_estimate() {
+        // Verifies FastPath insert and estimate stay coherent for repeated keys.
         let mut sh = CSHeap::<Vector2D<i64>, FastPath>::new(5, 256, 10);
         let key = SketchInput::Str("fast");
         for _ in 0..7 {
@@ -299,10 +543,353 @@ mod tests {
     }
 
     #[test]
+    fn fast_path_insert_many_and_bulk_insert() {
+        // Verifies FastPath batched APIs maintain estimate/heap consistency.
+        let mut sh = CSHeap::<Vector2D<i64>, FastPath>::new(5, 2048, 4);
+        let key = SketchInput::Str("fast-many");
+        sh.insert_many(&key, 6);
+        sh.bulk_insert(&[
+            SketchInput::Str("fast-many"),
+            SketchInput::Str("another"),
+            SketchInput::Str("fast-many"),
+        ]);
+
+        let estimate = sh.estimate(&key);
+        assert!((estimate - 8.0).abs() < 1e-9);
+        assert_eq!(heap_count_for_key(sh.heap(), &key), Some(estimate as i64));
+    }
+
+    #[test]
+    fn fast_path_heap_tracks_top_k() {
+        // Verifies FastPath top-k maintenance under weighted updates.
+        let mut sh = CSHeap::<Vector2D<i64>, FastPath>::new(5, 4096, 3);
+
+        for i in 1..=5u64 {
+            let key = SketchInput::U64(i);
+            sh.insert_many(&key, (i as i64) * 100);
+        }
+
+        let mut counts: Vec<i64> = sh.heap().heap().iter().map(|item| item.count).collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![300, 400, 500]);
+    }
+
+    #[test]
+    fn fast_path_merge_refreshes_existing_self_heap_entries() {
+        // Verifies FastPath merge refreshes self heap counts from merged sketch.
+        let mut a = CSHeap::<Vector2D<i64>, FastPath>::new(5, 4096, 2);
+        let mut b = CSHeap::<Vector2D<i64>, FastPath>::new(5, 4096, 1);
+        let a_key = SketchInput::Str("a-fast");
+        let c_key = SketchInput::Str("c-fast");
+        let b_key = SketchInput::Str("b-fast");
+
+        a.insert_many(&a_key, 120);
+        a.insert_many(&c_key, 10);
+
+        b.insert_many(&a_key, 40);
+        b.insert_many(&b_key, 400);
+
+        a.merge(&b);
+
+        let merged_estimate = a.estimate(&a_key) as i64;
+        assert_eq!(heap_count_for_key(a.heap(), &a_key), Some(merged_estimate));
+    }
+
+    #[test]
     fn default_construction() {
+        // Verifies default CSHeap dimensions and default top-k capacity.
         let sh = CSHeap::<Vector2D<i64>, RegularPath>::default();
         assert_eq!(sh.rows(), 3);
         assert_eq!(sh.cols(), 4096);
         assert_eq!(sh.heap().capacity(), DEFAULT_TOP_K);
+    }
+
+    #[test]
+    fn default_construction_fixed_backends_parity() {
+        // Verifies default construction parity across all supported backends.
+        let fixed_regular = CSHeap::<FixedMatrix, RegularPath>::default();
+        assert_eq!(fixed_regular.rows(), 5);
+        assert_eq!(fixed_regular.cols(), 2048);
+        assert_eq!(fixed_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let fixed_fast = CSHeap::<FixedMatrix, FastPath>::default();
+        assert_eq!(fixed_fast.rows(), 5);
+        assert_eq!(fixed_fast.cols(), 2048);
+        assert_eq!(fixed_fast.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i32_regular = CSHeap::<DefaultMatrixI32, RegularPath>::default();
+        assert_eq!(dm_i32_regular.rows(), 3);
+        assert_eq!(dm_i32_regular.cols(), 4096);
+        assert_eq!(dm_i32_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i32_fast = CSHeap::<DefaultMatrixI32, FastPath>::default();
+        assert_eq!(dm_i32_fast.rows(), 3);
+        assert_eq!(dm_i32_fast.cols(), 4096);
+        assert_eq!(dm_i32_fast.heap().capacity(), DEFAULT_TOP_K);
+
+        let qm_i64_regular = CSHeap::<QuickMatrixI64, RegularPath>::default();
+        assert_eq!(qm_i64_regular.rows(), 5);
+        assert_eq!(qm_i64_regular.cols(), 2048);
+        assert_eq!(qm_i64_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let qm_i64_fast = CSHeap::<QuickMatrixI64, FastPath>::default();
+        assert_eq!(qm_i64_fast.rows(), 5);
+        assert_eq!(qm_i64_fast.cols(), 2048);
+        assert_eq!(qm_i64_fast.heap().capacity(), DEFAULT_TOP_K);
+
+        let qm_i128_regular = CSHeap::<QuickMatrixI128, RegularPath>::default();
+        assert_eq!(qm_i128_regular.rows(), 5);
+        assert_eq!(qm_i128_regular.cols(), 2048);
+        assert_eq!(qm_i128_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let qm_i128_fast = CSHeap::<QuickMatrixI128, FastPath>::default();
+        assert_eq!(qm_i128_fast.rows(), 5);
+        assert_eq!(qm_i128_fast.cols(), 2048);
+        assert_eq!(qm_i128_fast.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i64_regular = CSHeap::<DefaultMatrixI64, RegularPath>::default();
+        assert_eq!(dm_i64_regular.rows(), 3);
+        assert_eq!(dm_i64_regular.cols(), 4096);
+        assert_eq!(dm_i64_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i64_fast = CSHeap::<DefaultMatrixI64, FastPath>::default();
+        assert_eq!(dm_i64_fast.rows(), 3);
+        assert_eq!(dm_i64_fast.cols(), 4096);
+        assert_eq!(dm_i64_fast.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i128_regular = CSHeap::<DefaultMatrixI128, RegularPath>::default();
+        assert_eq!(dm_i128_regular.rows(), 3);
+        assert_eq!(dm_i128_regular.cols(), 4096);
+        assert_eq!(dm_i128_regular.heap().capacity(), DEFAULT_TOP_K);
+
+        let dm_i128_fast = CSHeap::<DefaultMatrixI128, FastPath>::default();
+        assert_eq!(dm_i128_fast.rows(), 3);
+        assert_eq!(dm_i128_fast.cols(), 4096);
+        assert_eq!(dm_i128_fast.heap().capacity(), DEFAULT_TOP_K);
+    }
+
+    #[test]
+    #[should_panic(expected = "dimension mismatch while merging CountMin sketches")]
+    fn merge_requires_matching_dimensions_panics() {
+        // Verifies merge panics when dimensions differ.
+        let mut left = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 256, 4);
+        let right = CSHeap::<Vector2D<i64>, RegularPath>::new(6, 256, 4);
+        left.merge(&right);
+    }
+
+    #[test]
+    fn heap_entries_match_cs_estimates_after_mutations() {
+        // Verifies heap entries always match current sketch estimates after mutations.
+        let mut sh = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 4);
+        sh.insert_many(&SketchInput::Str("a"), 100);
+        sh.insert_many(&SketchInput::Str("b"), 70);
+        sh.bulk_insert(&[
+            SketchInput::Str("a"),
+            SketchInput::Str("c"),
+            SketchInput::Str("a"),
+            SketchInput::Str("d"),
+        ]);
+
+        for item in sh.heap().heap() {
+            let key = heap_item_to_sketch_input(&item.key);
+            assert_eq!(item.count, sh.estimate(&key) as i64);
+        }
+
+        let mut other = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 4);
+        other.insert_many(&SketchInput::Str("b"), 90);
+        other.insert_many(&SketchInput::Str("e"), 200);
+        sh.merge(&other);
+
+        for item in sh.heap().heap() {
+            let key = heap_item_to_sketch_input(&item.key);
+            assert_eq!(item.count, sh.estimate(&key) as i64);
+        }
+    }
+
+    #[test]
+    fn bulk_insert_equivalent_to_repeated_insert() {
+        // Verifies bulk_insert behavior matches repeated insert behavior.
+        let values = vec![
+            SketchInput::U64(1),
+            SketchInput::U64(2),
+            SketchInput::U64(1),
+            SketchInput::U64(3),
+            SketchInput::U64(2),
+            SketchInput::U64(1),
+            SketchInput::U64(4),
+            SketchInput::U64(2),
+            SketchInput::U64(5),
+        ];
+
+        let mut via_bulk = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 3);
+        via_bulk.bulk_insert(&values);
+
+        let mut via_repeat = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 3);
+        for value in &values {
+            via_repeat.insert(value);
+        }
+
+        for key in [1_u64, 2, 3, 4, 5] {
+            let k = SketchInput::U64(key);
+            assert!((via_bulk.estimate(&k) - via_repeat.estimate(&k)).abs() < 1e-9);
+            assert_eq!(
+                heap_count_for_key(via_bulk.heap(), &k),
+                heap_count_for_key(via_repeat.heap(), &k)
+            );
+        }
+    }
+
+    #[test]
+    fn regular_vs_fast_equivalence_on_same_stream() {
+        // Verifies regular and fast wrapper paths match on a short deterministic stream.
+        let values = vec![
+            SketchInput::Str("alpha"),
+            SketchInput::Str("beta"),
+            SketchInput::Str("alpha"),
+            SketchInput::Str("gamma"),
+            SketchInput::Str("beta"),
+            SketchInput::Str("alpha"),
+            SketchInput::Str("delta"),
+            SketchInput::Str("gamma"),
+            SketchInput::Str("epsilon"),
+            SketchInput::Str("alpha"),
+        ];
+
+        let mut regular = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 3);
+        let mut fast = CSHeap::<Vector2D<i64>, FastPath>::new(5, 4096, 3);
+        for value in &values {
+            regular.insert(value);
+            fast.insert(value);
+        }
+
+        for key in ["alpha", "beta", "gamma", "delta", "epsilon"] {
+            let k = SketchInput::Str(key);
+            assert!((regular.estimate(&k) - fast.estimate(&k)).abs() < 1e-9);
+            assert_eq!(
+                heap_count_for_key(regular.heap(), &k),
+                heap_count_for_key(fast.heap(), &k)
+            );
+        }
+    }
+
+    #[test]
+    fn merge_with_empty_other_and_empty_self() {
+        // Verifies merge behavior is stable when one side is empty.
+        let mut non_empty = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 3);
+        non_empty.insert_many(&SketchInput::Str("x"), 110);
+        non_empty.insert_many(&SketchInput::Str("y"), 50);
+
+        let empty = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 3);
+        let before_len = non_empty.heap().len();
+        let before_x = non_empty.estimate(&SketchInput::Str("x"));
+        non_empty.merge(&empty);
+        assert_eq!(non_empty.heap().len(), before_len);
+        assert!((non_empty.estimate(&SketchInput::Str("x")) - before_x).abs() < 1e-9);
+
+        let mut empty_self = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 2048, 3);
+        empty_self.merge(&non_empty);
+        assert!((empty_self.estimate(&SketchInput::Str("x")) - before_x).abs() < 1e-9);
+        assert!(heap_count_for_key(empty_self.heap(), &SketchInput::Str("x")).is_some());
+    }
+
+    #[test]
+    fn duplicate_candidate_keys_during_merge_do_not_corrupt_heap() {
+        // Verifies duplicate merge candidates do not duplicate heap entries.
+        let mut left = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 4);
+        let mut right = CSHeap::<Vector2D<i64>, RegularPath>::new(5, 4096, 4);
+
+        left.insert_many(&SketchInput::Str("dup"), 100);
+        left.insert_many(&SketchInput::Str("left-only"), 70);
+
+        right.insert_many(&SketchInput::Str("dup"), 90);
+        right.insert_many(&SketchInput::Str("right-only"), 60);
+
+        left.merge(&right);
+
+        let merged_estimate = left.estimate(&SketchInput::Str("dup")) as i64;
+        let dup_count = heap_count_for_key(left.heap(), &SketchInput::Str("dup"));
+        assert_eq!(dup_count, Some(merged_estimate));
+        assert!(left.heap().len() <= left.heap().capacity());
+
+        let dup_entries = left
+            .heap()
+            .heap()
+            .iter()
+            .filter(|item| heap_item_to_sketch_input(&item.key) == SketchInput::Str("dup"))
+            .count();
+        assert_eq!(dup_entries, 1);
+    }
+
+    #[test]
+    fn zipf_stream_top_k_recall_regular_fast_budget() {
+        // Verifies regular-path heap captures most true heavy hitters under a Zipf stream.
+        let rows = 5;
+        let cols = 4096;
+        let top_k = 16;
+        let (sketch, truth) =
+            run_zipf_stream_regular(rows, cols, top_k, 1024, 1.1, 20_000, 0x5eed_c0de);
+
+        assert!(sketch.heap().len() <= top_k);
+        for item in sketch.heap().heap() {
+            let key = heap_item_to_sketch_input(&item.key);
+            assert_eq!(item.count, sketch.estimate(&key) as i64);
+        }
+
+        let truth_top = top_k_truth_keys(&truth, top_k);
+        let heap_top = top_k_heap_keys(sketch.heap());
+        let recall_hits = truth_top.intersection(&heap_top).count();
+        assert!(
+            recall_hits >= 15,
+            "top-k recall too low: hits={recall_hits}, truth_top={truth_top:?}, heap_top={heap_top:?}"
+        );
+    }
+
+    #[test]
+    fn zipf_stream_top_k_recall_fast_path_fast_budget() {
+        // Verifies fast-path heap captures most true heavy hitters under a Zipf stream.
+        let rows = 5;
+        let cols = 4096;
+        let top_k = 16;
+        let (sketch, truth) =
+            run_zipf_stream_fast(rows, cols, top_k, 1024, 1.1, 20_000, 0x5eed_c0de);
+
+        assert!(sketch.heap().len() <= top_k);
+        for item in sketch.heap().heap() {
+            let key = heap_item_to_sketch_input(&item.key);
+            assert_eq!(item.count, sketch.estimate(&key) as i64);
+        }
+
+        let truth_top = top_k_truth_keys(&truth, top_k);
+        let heap_top = top_k_heap_keys(sketch.heap());
+        let recall_hits = truth_top.intersection(&heap_top).count();
+        assert!(
+            recall_hits >= 15,
+            "top-k recall too low: hits={recall_hits}, truth_top={truth_top:?}, heap_top={heap_top:?}"
+        );
+    }
+
+    #[test]
+    fn zipf_stream_regular_fast_heap_overlap() {
+        // Verifies regular and fast paths produce highly overlapping top-k heaps on Zipf input.
+        let rows = 5;
+        let cols = 4096;
+        let top_k = 16;
+        let stream = sample_zipf_u64(1024, 1.1, 20_000, 0xABCD_1234);
+
+        let mut regular = CSHeap::<Vector2D<i64>, RegularPath>::new(rows, cols, top_k);
+        let mut fast = CSHeap::<Vector2D<i64>, FastPath>::new(rows, cols, top_k);
+        for value in &stream {
+            let key = SketchInput::U64(*value);
+            regular.insert(&key);
+            fast.insert(&key);
+        }
+
+        let regular_heap_keys = top_k_heap_keys(regular.heap());
+        let fast_heap_keys = top_k_heap_keys(fast.heap());
+        let overlap = regular_heap_keys.intersection(&fast_heap_keys).count();
+        assert!(
+            (overlap as f64) / (top_k as f64) >= 0.8,
+            "heap overlap too low: overlap={overlap}, regular={regular_heap_keys:?}, fast={fast_heap_keys:?}"
+        );
     }
 }
