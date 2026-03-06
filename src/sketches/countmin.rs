@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::FastPathHasher;
+use crate::octo_delta::{CM_PROMASK, CmDelta};
 use crate::{
     DefaultMatrixI32, DefaultMatrixI64, DefaultMatrixI128, DefaultXxHasher, FastPath, FixedMatrix,
     MatrixHashType, MatrixStorage, NitroTarget, QuickMatrixI64, QuickMatrixI128, RegularPath,
@@ -308,6 +309,35 @@ where
     }
 }
 
+impl CountMin<Vector2D<i32>, RegularPath> {
+    /// Inserts one key and emits a `CmDelta` whenever a touched counter reaches
+    /// a `CM_PROMASK` multiple.
+    #[inline(always)]
+    pub fn insert_emit_delta(&mut self, value: &SketchInput, emit: &mut dyn FnMut(CmDelta)) {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        let threshold = CM_PROMASK as i32;
+        for r in 0..rows {
+            let hashed = hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            self.counts.increment_by_row(r, col, 1);
+            let current = self.counts.query_one_counter(r, col);
+            if current % threshold == 0 {
+                emit(CmDelta {
+                    row: r as u16,
+                    col: col as u16,
+                    value: CM_PROMASK,
+                });
+            }
+        }
+    }
+    /// Apply a `CmDelta` to a full-precision parent CountMin sketch.
+    pub fn apply_delta(&mut self, delta: CmDelta) {
+        self.counts
+            .increment_by_row(delta.row as usize, delta.col as usize, delta.value as i32);
+    }
+}
+
 // Fast-path hashing adapter for Vector2D.
 impl<T> FastPathHasher for Vector2D<T>
 where
@@ -486,6 +516,51 @@ mod tests {
     };
     use core::f64;
     use std::collections::HashMap;
+
+    #[test]
+    fn countmin_insert_emit_delta_emits_at_threshold_and_resets_period() {
+        let mut sketch = CountMin::<Vector2D<i32>, RegularPath>::with_dimensions(3, 64);
+        let key = SketchInput::U64(42);
+        let mut deltas: Vec<CmDelta> = Vec::new();
+
+        for _ in 0..(CM_PROMASK - 1) {
+            sketch.insert_emit_delta(&key, &mut |d| deltas.push(d));
+        }
+        assert!(
+            deltas.is_empty(),
+            "regular CMS worker path should not emit before threshold"
+        );
+
+        sketch.insert_emit_delta(&key, &mut |d| deltas.push(d));
+        assert_eq!(
+            deltas.len(),
+            3,
+            "should emit one delta per row at threshold"
+        );
+        assert!(deltas.iter().all(|d| d.value == CM_PROMASK));
+
+        for _ in 0..(CM_PROMASK - 1) {
+            sketch.insert_emit_delta(&key, &mut |d| deltas.push(d));
+        }
+        assert_eq!(deltas.len(), 3, "no second emission before next threshold");
+        sketch.insert_emit_delta(&key, &mut |d| deltas.push(d));
+        assert_eq!(deltas.len(), 6, "should emit again on next threshold");
+    }
+
+    #[test]
+    fn countmin_apply_delta_increments_parent_counter() {
+        let mut parent = CountMin::<Vector2D<i32>, RegularPath>::with_dimensions(3, 64);
+        let delta = CmDelta {
+            row: 1,
+            col: 5,
+            value: CM_PROMASK,
+        };
+        parent.apply_delta(delta);
+        assert_eq!(
+            parent.as_storage().query_one_counter(1, 5),
+            CM_PROMASK as i32
+        );
+    }
 
     fn run_zipf_stream(
         rows: usize,
