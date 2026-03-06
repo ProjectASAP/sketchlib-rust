@@ -2,7 +2,7 @@ use crate::{
     DefaultMatrixI32, DefaultMatrixI64, DefaultMatrixI128, DefaultXxHasher, FastPath,
     FastPathHasher, FixedMatrix, MatrixHashType, MatrixStorage, NitroTarget, QuickMatrixI64,
     QuickMatrixI128, RegularPath, SketchHasher, SketchInput, Vector1D, Vector2D,
-    compute_median_inline_f64,
+    compute_median_inline_f64, hash64_seeded,
 };
 use rmp_serde::{
     decode::Error as RmpDecodeError, encode::Error as RmpEncodeError, from_slice, to_vec_named,
