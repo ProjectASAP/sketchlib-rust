@@ -13,6 +13,15 @@
 - **Optimization**: integrated into sketches implementation
   - More detail about optimization techniques/features can be found in: [features](./docs/features.md)
 
+## Current State
+
+- ✅ Core structured sketches are available and actively used: `CountMin`, `Count`, `HyperLogLog`, `KLL`
+- ✅ Framework coverage includes `Hydra`, `UnivMon`, `HashLayer`, `ExponentialHistogram`, and `NitroBatch`
+- ✅ Folded window sketches are implemented: `FoldCMS` and `FoldCS` ([design doc](./docs/fold_sketch_design.md))
+- ✅ Optimized EH path is implemented via `EHUnivOptimized` (hybrid map + sketch tiers with sketch pooling)
+- ✅ Hashing is customizable through `SketchHasher` (default: `DefaultXxHasher`)
+- 🚧 Ongoing work focuses on feature expansion, broader test coverage, benchmark depth, serialization coverage, and API stabilization
+
 ## API Overview
 
 There are three sections in the API overview section:
