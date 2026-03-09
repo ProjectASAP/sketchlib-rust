@@ -318,7 +318,10 @@ where
             let hashed = H::hash64_seeded(r, value);
             let col = ((hashed & LOWER_32_MASK) as usize) % cols;
             let v = self.counts.query_one_counter(r, col);
-            if v.partial_cmp(&min).map(|o| o == Ordering::Less).unwrap_or(false) {
+            if v.partial_cmp(&min)
+                .map(|o| o == Ordering::Less)
+                .unwrap_or(false)
+            {
                 min = v;
             }
         }

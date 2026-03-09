@@ -209,7 +209,11 @@ macro_rules! impl_fixed_matrix {
                     let col = (hashed as usize) % $cols;
                     let idx = row * $cols + col;
                     let candidate = op(&self.data[idx], row, &hashed_val);
-                    if candidate.partial_cmp(&min).map(|o| o == Ordering::Less).unwrap_or(false) {
+                    if candidate
+                        .partial_cmp(&min)
+                        .map(|o| o == Ordering::Less)
+                        .unwrap_or(false)
+                    {
                         min = candidate;
                     }
                 }

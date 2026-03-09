@@ -393,7 +393,11 @@ impl<T> Vector2D<T> {
             let col = self.col_for_row(hashed_val, row);
             let idx = row * self.cols + col;
             let candidate = op(&self.data[idx], row, hashed_val);
-            if candidate.partial_cmp(&min).map(|o| o == Ordering::Less).unwrap_or(false) {
+            if candidate
+                .partial_cmp(&min)
+                .map(|o| o == Ordering::Less)
+                .unwrap_or(false)
+            {
                 min = candidate;
             }
         }
@@ -489,7 +493,11 @@ impl<T> Vector2D<T> {
             let col = self.col_for_row(hashed_val, row);
             let idx = row * self.cols + col;
             let candidate = op(&self.data[idx], row, hashed_val);
-            if candidate.partial_cmp(&max).map(|o| o == Ordering::Greater).unwrap_or(false) {
+            if candidate
+                .partial_cmp(&max)
+                .map(|o| o == Ordering::Greater)
+                .unwrap_or(false)
+            {
                 max = candidate;
             }
         }
@@ -532,7 +540,11 @@ impl<T> Vector2D<T> {
             let col = self.col_for_row(hashed_val, row);
             let idx = row * self.cols + col;
             let candidate = op(&self.data[idx], query_key, row, hashed_val);
-            if candidate.partial_cmp(&min).map(|o| o == Ordering::Less).unwrap_or(false) {
+            if candidate
+                .partial_cmp(&min)
+                .map(|o| o == Ordering::Less)
+                .unwrap_or(false)
+            {
                 min = candidate;
             }
         }
@@ -575,7 +587,11 @@ impl<T> Vector2D<T> {
             let col = self.col_for_row(hashed_val, row);
             let idx = row * self.cols + col;
             let candidate = op(&self.data[idx], query_key, row, hashed_val);
-            if candidate.partial_cmp(&max).map(|o| o == Ordering::Greater).unwrap_or(false) {
+            if candidate
+                .partial_cmp(&max)
+                .map(|o| o == Ordering::Greater)
+                .unwrap_or(false)
+            {
                 max = candidate;
             }
         }
