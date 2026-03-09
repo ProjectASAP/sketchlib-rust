@@ -308,6 +308,39 @@ where
     }
 }
 
+/// f64-counter path: supports fractional weights without integer rounding.
+impl<H: SketchHasher> CountMin<Vector2D<f64>, RegularPath, H> {
+    /// Insert a fractional-weight observation.
+    pub fn insert_weighted(&mut self, value: &SketchInput, weight: f64) {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        for r in 0..rows {
+            let hashed = H::hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            self.counts.increment_by_row(r, col, weight);
+        }
+    }
+
+    /// Frequency estimate as f64 (no Ord bound required).
+    pub fn estimate_f64(&self, value: &SketchInput) -> f64 {
+        let rows = self.counts.rows();
+        let cols = self.counts.cols();
+        let mut min = f64::MAX;
+        for r in 0..rows {
+            let hashed = H::hash64_seeded(r, value);
+            let col = ((hashed & LOWER_32_MASK) as usize) % cols;
+            let v = self.counts.query_one_counter(r, col);
+            if v < min {
+                min = v;
+            }
+        }
+        min
+    }
+}
+
+/// Count-Min sketch with floating-point counters (no integer rounding).
+pub type CountMinF64<H = DefaultXxHasher> = CountMin<Vector2D<f64>, RegularPath, H>;
+
 // Fast-path hashing adapter for Vector2D.
 impl<T> FastPathHasher for Vector2D<T>
 where
