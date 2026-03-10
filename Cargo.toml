@@ -13,6 +13,8 @@ twox-hash = "2.1.2"
 pcap = "1.1" 
 clap = { version = "4.0", features = ["derive"] }
 smallvec = "1.13.2"
+core_affinity = "0.8"
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -58,6 +60,11 @@ harness = false
 [[bench]]
 name = "median_bench"
 harness = false
+
+[[bench]]
+name = "octo_speedup"
+harness = false
+path = "benches/octo_speedup.rs"
 
 #[profile.release]
 #debug = true
