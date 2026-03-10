@@ -197,7 +197,7 @@ macro_rules! impl_fixed_matrix {
             fn fast_query_min<F, R>(&self, hashed_val: &$hash_ty, op: F) -> R
             where
                 F: Fn(&Self::Counter, usize, &$hash_ty) -> R,
-                R: Ord,
+                R: PartialOrd,
             {
                 let hashed_val = *hashed_val;
                 let hashed = hashed_val & Self::MASK;

@@ -384,7 +384,7 @@ impl<T> Vector2D<T> {
     pub fn fast_query_min<F, R>(&self, hashed_val: &MatrixHashType, op: F) -> R
     where
         F: Fn(&T, usize, &MatrixHashType) -> R,
-        R: Ord,
+        R: PartialOrd,
     {
         let c0 = self.col_for_row(hashed_val, 0);
         let mut min = op(&self.data[c0], 0, hashed_val);
@@ -479,7 +479,7 @@ impl<T> Vector2D<T> {
     pub fn fast_query_max<F, R>(&self, hashed_val: &MatrixHashType, op: F) -> R
     where
         F: Fn(&T, usize, &MatrixHashType) -> R,
-        R: Ord,
+        R: PartialOrd,
     {
         let c0 = self.col_for_row(hashed_val, 0);
         let mut max = op(&self.data[c0], 0, hashed_val);
@@ -521,7 +521,7 @@ impl<T> Vector2D<T> {
     ) -> R
     where
         F: Fn(&T, &Q, usize, &MatrixHashType) -> R,
-        R: Ord,
+        R: PartialOrd,
     {
         let c0 = self.col_for_row(hashed_val, 0);
         let mut min = op(&self.data[c0], query_key, 0, hashed_val);
@@ -563,7 +563,7 @@ impl<T> Vector2D<T> {
     ) -> R
     where
         F: Fn(&T, &Q, usize, &MatrixHashType) -> R,
-        R: Ord,
+        R: PartialOrd,
     {
         let c0 = self.col_for_row(hashed_val, 0);
         let mut max = op(&self.data[c0], query_key, 0, hashed_val);
@@ -750,7 +750,7 @@ where
     fn fast_query_min<F, R>(&self, hashed_val: &MatrixHashType, op: F) -> R
     where
         F: Fn(&Self::Counter, usize, &MatrixHashType) -> R,
-        R: Ord,
+        R: PartialOrd,
     {
         self.fast_query_min(hashed_val, op)
     }
